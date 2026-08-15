@@ -31,6 +31,8 @@ infisical.env
 .claude/settings.local.json
 .tokensave/
 .headroom/
+.serena/
+.codegraph/
 CLAUDE.md
 AGENTS.md
 
