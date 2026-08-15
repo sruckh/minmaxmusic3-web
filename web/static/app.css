@@ -1001,6 +1001,21 @@ select {
   border-color: var(--text-secondary);
   color: var(--text-primary);
 }
+.btn--danger {
+  color: var(--crimson);
+  border-color: var(--crimson);
+  @supports (color: color-mix(in lab, red, red)) {
+    border-color: color-mix(in srgb, var(--crimson) 40%, var(--border));
+  }
+}
+.btn--danger:hover {
+  background: var(--crimson);
+  @supports (color: color-mix(in lab, red, red)) {
+    background: color-mix(in srgb, var(--crimson) 15%, transparent);
+  }
+  border-color: var(--crimson);
+  color: var(--crimson);
+}
 .btn--sm {
   padding: 6px 12px;
   font-size: 0.8125rem;
