@@ -98,13 +98,16 @@ func TestDeleteSong(t *testing.T) {
 		t.Fatalf("GET /audio/%s = %d", id, audioRes.Code)
 	}
 
-	// Delete with HTMX header
-	req := httptest.NewRequest("DELETE", "/songs/"+id, nil)
+	// Delete with HTMX header and redirect query
+	req := httptest.NewRequest("DELETE", "/songs/"+id+"?redirect=/history", nil)
 	req.Header.Set("HX-Request", "true")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != 200 {
 		t.Fatalf("DELETE /songs/%s = %d", id, rec.Code)
+	}
+	if rec.Header().Get("HX-Redirect") != "/history" {
+		t.Fatalf("expected HX-Redirect header '/history', got %q", rec.Header().Get("HX-Redirect"))
 	}
 
 	// Verify song detail is 404
