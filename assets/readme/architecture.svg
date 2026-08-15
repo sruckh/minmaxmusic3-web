@@ -1,0 +1,126 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 480" width="100%" height="auto">
+  <title>MM3 System Architecture Diagram</title>
+  <defs>
+    <style>
+      @import url('https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,500;1,9..144,500&amp;family=IBM+Plex+Mono:wght@400;600&amp;family=Hanken+Grotesk:wght@400;600;700&amp;display=swap');
+
+      :root {
+        --bg-color: #2D0812;
+        --panel-bg: #450D1D;
+        --border-color: #701630;
+        --text-main: #FFFFFF;
+        --text-muted: #CABAC0;
+        --teal-accent: #004D71;
+        --crimson-hot: #E0004C;
+        --green-level: #44A400;
+        --violet-aux: #95009C;
+        --orange-clip: #E02800;
+        --line-color: #A62043;
+      }
+
+      @media (prefers-color-scheme: light) {
+        :root {
+          --bg-color: #F4EFF1;
+          --panel-bg: #FFFFFF;
+          --border-color: #CABAC0;
+          --text-main: #1A040B;
+          --text-muted: #5E1226;
+          --teal-accent: #004D71;
+          --crimson-hot: #C50043;
+          --green-level: #44A400;
+          --violet-aux: #95009C;
+          --orange-clip: #E02800;
+          --line-color: #C50043;
+        }
+      }
+
+      .bg { fill: var(--bg-color); }
+      .box { fill: var(--panel-bg); stroke: var(--border-color); stroke-width: 2; rx: 10px; }
+      .node-title { font-family: 'Hanken Grotesk', sans-serif; font-weight: 700; font-size: 16px; fill: var(--text-main); }
+      .node-sub { font-family: 'IBM Plex Mono', monospace; font-size: 12px; fill: var(--text-muted); }
+      .conn-line { stroke: var(--line-color); stroke-width: 2; stroke-dasharray: 6 4; }
+      .arrow { fill: var(--line-color); }
+      .label-pill { fill: var(--teal-accent); rx: 6px; }
+      .pill-text { font-family: 'IBM Plex Mono', monospace; font-size: 11px; fill: #FFFFFF; font-weight: 600; }
+    </style>
+  </defs>
+
+  <!-- Outer Canvas -->
+  <rect width="1200" height="480" rx="16" class="bg" />
+
+  <!-- Title -->
+  <text x="60" y="50" font-family="Fraunces" font-style="italic" font-size="28" fill="var(--text-main)">System Architecture &amp; Execution Topology</text>
+  <text x="60" y="74" font-family="IBM Plex Mono" font-size="12" fill="var(--text-muted)" letter-spacing="0.1em">DOCKER CONTAINER shape · INGRESS · PERSISTENCE · ASYNC WORKER PIPELINE</text>
+
+  <!-- Node 1: Browser UI -->
+  <g transform="translate(60, 120)">
+    <rect width="220" height="150" class="box" />
+    <rect x="0" y="0" width="220" height="32" rx="10" fill="var(--teal-accent)" />
+    <text x="110" y="21" font-family="IBM Plex Mono" font-size="12" fill="#FFF" font-weight="600" text-anchor="middle">1. BROWSER UI</text>
+    <text x="20" y="62" class="node-title">Go Templates + htmx</text>
+    <text x="20" y="85" class="node-sub">Alpine.js Client State</text>
+    <text x="20" y="105" class="node-sub">htmx Fragment Poll</text>
+    <text x="20" y="125" class="node-sub">Local Timezone Render</text>
+  </g>
+
+  <!-- Node 2: Go Web Server (mm3-app) -->
+  <g transform="translate(350, 120)">
+    <rect width="250" height="150" class="box" stroke="var(--crimson-hot)" stroke-width="2.5" />
+    <rect x="0" y="0" width="250" height="32" rx="10" fill="var(--crimson-hot)" />
+    <text x="125" y="21" font-family="IBM Plex Mono" font-size="12" fill="#FFF" font-weight="600" text-anchor="middle">2. GO SERVER (mm3-app)</text>
+    <text x="20" y="62" class="node-title">cmd/server &amp; handlers</text>
+    <text x="20" y="85" class="node-sub">Infisical Secret Inject</text>
+    <text x="20" y="105" class="node-sub">Background Worker</text>
+    <text x="20" y="125" class="node-sub">Rate Limiters (IP/Global)</text>
+  </g>
+
+  <!-- Node 3: Storage (/data) -->
+  <g transform="translate(350, 310)">
+    <rect width="250" height="130" class="box" />
+    <rect x="0" y="0" width="250" height="28" rx="10" fill="var(--green-level)" />
+    <text x="125" y="19" font-family="IBM Plex Mono" font-size="11" fill="#FFF" font-weight="600" text-anchor="middle">3. PERSISTENT DISK (/data)</text>
+    <text x="20" y="55" class="node-title">SQLite WAL (mm3.db)</text>
+    <text x="20" y="78" class="node-sub">jobs &amp; songs Tables</text>
+    <text x="20" y="98" class="node-sub">/data/audio/*.wav Files</text>
+  </g>
+
+  <!-- Node 4: OmniRoute LLM Proxy -->
+  <g transform="translate(680, 120)">
+    <rect width="220" height="150" class="box" />
+    <rect x="0" y="0" width="220" height="32" rx="10" fill="var(--violet-aux)" />
+    <text x="110" y="21" font-family="IBM Plex Mono" font-size="12" fill="#FFF" font-weight="600" text-anchor="middle">4. OMNIROUTE LLM</text>
+    <text x="20" y="62" class="node-title">POST /v1/chat/completions</text>
+    <text x="20" y="85" class="node-sub">thinking: disabled</text>
+    <text x="20" y="105" class="node-sub">reasoning_effort: none</text>
+    <text x="20" y="125" class="node-sub">max_tokens: 8000</text>
+  </g>
+
+  <!-- Node 5: RunPod Serverless GPU -->
+  <g transform="translate(940, 120)">
+    <rect width="200" height="150" class="box" />
+    <rect x="0" y="0" width="200" height="32" rx="10" fill="var(--crimson-hot)" />
+    <text x="100" y="21" font-family="IBM Plex Mono" font-size="12" fill="#FFF" font-weight="600" text-anchor="middle">5. RUNPOD GPU</text>
+    <text x="15" y="62" class="node-title">MiniMax Music 3</text>
+    <text x="15" y="85" class="node-sub">POST /runsync</text>
+    <text x="15" y="105" class="node-sub">32 kHz Stereo WAV</text>
+    <text x="15" y="125" class="node-sub">S3 / Base64 Output</text>
+  </g>
+
+  <!-- Connections -->
+  <!-- 1 -> 2 -->
+  <line x1="280" y1="195" x2="350" y2="195" class="conn-line" />
+  <polygon points="350,195 342,190 342,200" class="arrow" />
+
+  <!-- 2 -> 3 -->
+  <line x1="475" y1="270" x2="475" y2="310" class="conn-line" />
+  <polygon points="475,310 470,302 480,302" class="arrow" />
+
+  <!-- 2 -> 4 -->
+  <line x1="600" y1="170" x2="680" y2="170" class="conn-line" />
+  <polygon points="680,170 672,165 672,175" class="arrow" />
+
+  <!-- 2 -> 5 -->
+  <path d="M 600,220 L 910,220 L 940,220" class="conn-line" fill="none" />
+  <polygon points="940,220 932,215 932,225" class="arrow" />
+
+</svg>
