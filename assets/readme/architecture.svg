@@ -1,47 +1,43 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 480" width="100%" height="auto">
-  <title>MM3 System Architecture Diagram</title>
+  <title>MiniMax Music 3 System Architecture Diagram</title>
   <defs>
     <style>
-      @import url('https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,500;1,9..144,500&amp;family=IBM+Plex+Mono:wght@400;600&amp;family=Hanken+Grotesk:wght@400;600;700&amp;display=swap');
+      @import url('https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;600;700&amp;family=IBM+Plex+Mono:wght@400;600&amp;display=swap');
 
       :root {
-        --bg-color: #2D0812;
-        --panel-bg: #450D1D;
-        --border-color: #701630;
+        --bg-color: #1C0A10;
+        --panel-bg: #2D121B;
+        --border-color: #4A1F2C;
         --text-main: #FFFFFF;
         --text-muted: #CABAC0;
         --teal-accent: #004D71;
         --crimson-hot: #E0004C;
         --green-level: #44A400;
         --violet-aux: #95009C;
-        --orange-clip: #E02800;
-        --line-color: #A62043;
+        --line-color: #E0004C;
       }
 
       @media (prefers-color-scheme: light) {
         :root {
-          --bg-color: #F4EFF1;
+          --bg-color: #F8F5F6;
           --panel-bg: #FFFFFF;
-          --border-color: #CABAC0;
-          --text-main: #1A040B;
-          --text-muted: #5E1226;
+          --border-color: #E0D5D8;
+          --text-main: #1F0A11;
+          --text-muted: #6E5B61;
           --teal-accent: #004D71;
           --crimson-hot: #C50043;
-          --green-level: #44A400;
-          --violet-aux: #95009C;
-          --orange-clip: #E02800;
+          --green-level: #3A8C00;
+          --violet-aux: #800086;
           --line-color: #C50043;
         }
       }
 
       .bg { fill: var(--bg-color); }
-      .box { fill: var(--panel-bg); stroke: var(--border-color); stroke-width: 2; rx: 10px; }
+      .box { fill: var(--panel-bg); stroke: var(--border-color); stroke-width: 1.5; rx: 10px; }
       .node-title { font-family: 'Hanken Grotesk', sans-serif; font-weight: 700; font-size: 16px; fill: var(--text-main); }
       .node-sub { font-family: 'IBM Plex Mono', monospace; font-size: 12px; fill: var(--text-muted); }
       .conn-line { stroke: var(--line-color); stroke-width: 2; stroke-dasharray: 6 4; }
       .arrow { fill: var(--line-color); }
-      .label-pill { fill: var(--teal-accent); rx: 6px; }
-      .pill-text { font-family: 'IBM Plex Mono', monospace; font-size: 11px; fill: #FFFFFF; font-weight: 600; }
     </style>
   </defs>
 
@@ -49,8 +45,8 @@
   <rect width="1200" height="480" rx="16" class="bg" />
 
   <!-- Title -->
-  <text x="60" y="50" font-family="Fraunces" font-style="italic" font-size="28" fill="var(--text-main)">System Architecture &amp; Execution Topology</text>
-  <text x="60" y="74" font-family="IBM Plex Mono" font-size="12" fill="var(--text-muted)" letter-spacing="0.1em">DOCKER CONTAINER shape · INGRESS · PERSISTENCE · ASYNC WORKER PIPELINE</text>
+  <text x="60" y="50" font-family="Hanken Grotesk" font-weight="700" font-size="28" fill="var(--text-main)">System Architecture &amp; Execution Topology</text>
+  <text x="60" y="74" font-family="IBM Plex Mono" font-size="12" fill="var(--text-muted)" letter-spacing="0.1em">TEXT-TO-SONG PIPELINE · INFERENCE WORKER · PERSISTENCE · AI ASSISTANT</text>
 
   <!-- Node 1: Browser UI -->
   <g transform="translate(60, 120)">

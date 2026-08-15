@@ -1,15 +1,16 @@
 <p align="center">
-  <img src="assets/readme/hero.svg" alt="MM3 Console Hero Banner" width="100%">
+  <img src="assets/readme/hero.svg" alt="MiniMax Music 3 Web Interface Hero Banner" width="100%">
 </p>
 
-<h1 align="center">MM3 — MiniMax Music 3 Web Console</h1>
+<h1 align="center">MiniMax Music 3 Web Interface</h1>
 
 <p align="center">
-  <strong>A studio-grade web front-end and AI assistant for the MiniMax Music 3 music generation model.</strong><br>
-  Built like classic outboard hardware — type a description of a sound, draft tagged lyrics, and print it to tape.
+  <strong>A web interface for creating music using text-to-song inference powered by MiniMax Music 3.</strong><br>
+  Turn text ideas, tagged lyrics, and style captions into full 32 kHz stereo WAV audio tracks.
 </p>
 
 <p align="center">
+  <a href="#overview">Overview</a> •
   <a href="#features">Features</a> •
   <a href="#architecture">Architecture</a> •
   <a href="#quick-start">Quick Start</a> •
@@ -20,73 +21,72 @@
 
 ---
 
+## Overview
+
+**minmaxmusic3-web** is a self-hosted web application for generating music from text using the **MiniMax Music 3** model. Users can describe a sound, draft structured lyrics, set style parameters, and generate high-quality audio files.
+
+---
+
 ## Features
 
-### 🎛️ Outboard Studio Console UI
-Designed after studio hardware and analog channel strips. Built with **Go 1.24**, **htmx**, **Alpine.js**, and **Tailwind CSS v4** following the `OUTBOARD` design system (`DESIGN.md`).
-- **5-State Signal Peak Meter**: Visual meter tracking Idle, Audio Signal, AI Layer, Hot Record, and Clipping states.
-- **Dual Theme Support**: Dark (`#5E1226` burgundy ground) and Light (`#E5DCDF` mist ground) studio visual themes.
+### 🎵 Text-to-Song Music Generation
+- Generate full-length music tracks (up to 300 seconds) from text lyrics and style captions.
+- Outputs high-quality **32 kHz 16-bit stereo WAV** audio files.
 
-### 🪄 Fast AI Songwriting & Style Assistant
-An in-app AI assistant (`POST /assistant`) that turns a rough song idea into correctly formatted MiniMax Music 3 inputs:
-- **Tagged Lyrics**: Generates bracketed section tags (`[Intro]`, `[Verse]`, `[Pre-Chorus]`, `[Chorus]`, `[Bridge]`, `[Outro]`) on their own lines.
-- **3-Heading Style Caption**: Structure caption formatted into **Global Metadata**, **Vocal Details**, and **Arrangement** timeline.
-- **Fast Reasoning-Bypassed Latency**: Sends `thinking: {"type": "disabled"}` and `reasoning_effort: "none"` to bypass 10,000+ token internal thinking delays on reasoning models (`deepseek-v4-flash`, `deepseek-r1`), delivering drafts in under 3 seconds.
-- **Robust JSON Parsing**: 3-stage fallback parser handles fenced code blocks, unclosed fences, and raw JSON objects.
+### 🪄 AI Songwriting & Style Assistant
+- Integrated AI assistant (`POST /assistant`) that drafts tagged lyrics (`[Verse]`, `[Chorus]`, `[Bridge]`, `[Outro]`) and structured style descriptions from a simple prompt.
+- **Fast Response Latency**: Sends `thinking: {"type": "disabled"}` and `reasoning_effort: "none"` to bypass internal thinking delays on reasoning models (`deepseek-v4-flash`), delivering drafts in under 3 seconds.
+- **Resilient JSON Parsing**: Multi-stage parser handles closed code fences, unclosed code fences, and raw JSON objects.
 
 ### ⚡ RunPod Serverless GPU Inference
-Worker pipeline connected to [github.com/sruckh/minmaxmusic3-serverless](https://github.com/sruckh/minmaxmusic3-serverless):
-- Generates 32 kHz 16-bit stereo WAV audio.
-- Supports S3 presigned URL delivery and inline base64 fallback.
-- In-flight concurrency limits and rate-limiting protection per client IP.
+- Asynchronous worker queue connected to the RunPod Serverless worker ([sruckh/minmaxmusic3-serverless](https://github.com/sruckh/minmaxmusic3-serverless)).
+- Handles job queueing, polling, and audio file downloading with automatic error handling.
 
-### 💾 SQLite Library & Song History
-- **SQLite WAL Engine**: Pure-Go SQLite database (`modernc.org/sqlite`) stored at `/data/mm3.db`.
-- **Browser Local Timezone Dates**: Song creation timestamps render automatically in the end user's local timezone via Alpine.js.
-- **Playback & Navigation**: Song playback screen with audio player, lyrics viewer, style caption, seed replay, and `← Back to history` navigation.
+### 💾 Song Library & Playback
+- **SQLite Database**: Persists job states and song metadata in `/data/mm3.db` using WAL mode.
+- **Local Timezone Display**: Creation timestamps automatically format in the user's local browser timezone.
+- **Playback & Download**: Dedicated song playback page with audio player, lyrics display, style caption, seed replay, and a `← Back to history` button.
 
-### 🔒 Zero-Trust Security & Infisical Secrets
-- **No Hardcoded Secrets**: Secrets (`RUNPOD_API_KEY`, `LLM_API_KEY`) are fetched via **Infisical Universal Auth** machine identities at container startup.
-- **RAM-Only Bootstrap Secrets**: Host-side bootstrap secrets are mounted read-only via `tmpfs` (`/dev/shm`).
-- **Zero Published Host Ports**: Exposes container port `8080` internally on Docker `shared_net` for Nginx Proxy Manager (`mm3.gemneye.xyz`).
+### 🔒 Secure Deployment
+- **Zero Hardcoded Secrets**: Secrets (`RUNPOD_API_KEY`, `LLM_API_KEY`) are injected via Infisical Universal Auth machine identities.
+- **Isolated Network Shape**: Container runs with zero published host ports behind Nginx Proxy Manager on Docker `shared_net`.
 
 ---
 
 ## Architecture
 
 <p align="center">
-  <img src="assets/readme/architecture.svg" alt="MM3 System Architecture" width="100%">
+  <img src="assets/readme/architecture.svg" alt="MiniMax Music 3 System Architecture" width="100%">
 </p>
 
 ### Execution Flow
-1. **User Request**: User inputs a song idea into the AI Assistant or submits the generation form on `mm3.gemneye.xyz`.
-2. **AI Assistant (`POST /assistant`)**: Server calls OmniRoute (`/v1/chat/completions`) with an 8,000 token ceiling and thinking disabled (`thinking: disabled`).
-3. **Job Queue (`POST /jobs`)**: Validates input formatting and creates a queued job in `/data/mm3.db`.
-4. **Background Worker (`internal/worker`)**: Dequeues queued jobs, submits to RunPod Serverless (`POST /runsync`), downloads output audio WAV to `/data/audio/`, and updates job/song status.
-5. **htmx Polling**: Browser polls `GET /jobs/{id}` for state updates and swaps the audio player when complete.
+1. **User Request**: User enters a song concept into the AI assistant or fills in the generation form.
+2. **AI Assistant (`POST /assistant`)**: Proxies to OmniRoute / LLM gateway with thinking disabled (`thinking: disabled`).
+3. **Job Queue (`POST /jobs`)**: Validates input and stores a queued job in SQLite (`/data/mm3.db`).
+4. **Background Worker**: Dequeues jobs, sends inference requests to RunPod GPU (`POST /runsync`), downloads WAV audio to `/data/audio/`, and updates the database.
+5. **htmx Polling**: Browser polls `GET /jobs/{id}` and updates the player once generation is complete.
 
 ---
 
 ## Quick Start
 
 ### Prerequisites
-- **Docker** and **Docker Compose**
-- GPG bootstrap key at `~/.config/mm3-web-infisical/client_secret.gpg`
-- Infisical environment config at `~/.config/mm3-web-infisical/infisical.env`
+- **Docker** &amp; **Docker Compose**
+- Infisical environment configuration &amp; client secret
 
 ### Bring Up the Stack
-Run the secure bring-up script, which decrypts the client secret to RAM (`/dev/shm`) and starts the container stack:
+Run the bring-up script to decrypt secrets into RAM (`/dev/shm`) and start the application:
 
 ```bash
 ./scripts/up.sh --build
 ```
 
-### Check Logs & Health
+### Verify Container Logs
 ```bash
-docker logs mm3-app --tail 50
+docker logs mm3-app --tail 20
 ```
 
-Verify that secrets were injected and services booted:
+Expected startup output:
 ```text
 time=2026-08-15T19:04:58.009Z level=INFO msg="config loaded" summary="addr=:8080 web=/app/web db=/data/mm3.db audio=/data/audio in_flight=2 runpod_endpoint=set runpod_key=true llm_base=set llm_model=set llm_key=true llm_thinking=disabled llm_reasoning_effort=none"
 time=2026-08-15T19:04:58.012Z level=INFO msg=listening addr=:8080
@@ -98,15 +98,15 @@ time=2026-08-15T19:04:58.012Z level=INFO msg=listening addr=:8080
 
 | Endpoint | Method | Description |
 |---|---|---|
-| `GET /` | `GET` | Main console homepage (Generate form &amp; AI assistant panel). |
-| `POST /assistant` | `POST` | Proxy LLM call to draft tagged lyrics and style caption (`idea` form param). |
-| `POST /jobs` | `POST` | Validate input form and queue a music generation job. |
-| `GET /jobs/{id}` | `GET` | htmx poll endpoint returning job status or audio player fragment. |
-| `GET /history` | `GET` | Paginated song library sorted newest-first. |
-| `GET /songs/{id}` | `GET` | Song playback detail page (lyrics, caption, seed, back navigation). |
-| `POST /songs/{id}/regenerate` | `POST` | Re-queue generation job using the same seed and parameters. |
+| `GET /` | `GET` | Web console homepage with generation form &amp; assistant panel. |
+| `POST /assistant` | `POST` | AI assistant proxy to draft tagged lyrics and style caption. |
+| `POST /jobs` | `POST` | Validate form and queue a text-to-song generation job. |
+| `GET /jobs/{id}` | `GET` | htmx polling endpoint returning job status or player HTML. |
+| `GET /history` | `GET` | Paginated song library sorted newest-first with local timestamps. |
+| `GET /songs/{id}` | `GET` | Playback detail page with lyrics, caption, seed, and history navigation. |
+| `POST /songs/{id}/regenerate` | `POST` | Re-queue generation job using the same inputs and seed. |
 | `GET /audio/{id}` | `GET` | Stream or download generated WAV audio file. |
-| `GET /healthz` | `GET` | Liveness healthcheck endpoint (`200 OK`). |
+| `GET /healthz` | `GET` | Healthcheck endpoint (`200 OK`). |
 
 ---
 
@@ -114,17 +114,17 @@ time=2026-08-15T19:04:58.012Z level=INFO msg=listening addr=:8080
 
 | Environment Variable | Default Value | Description |
 |---|---|---|
-| `MM3_ADDR` | `:8080` | Listen address inside container. |
-| `MM3_PUBLIC_URL` | `https://mm3.gemneye.xyz` | Public hostname. |
-| `MM3_WEB_DIR` | `/app/web` | Absolute path to web templates and static assets. |
+| `MM3_ADDR` | `:8080` | Server listen address. |
+| `MM3_PUBLIC_URL` | `https://mm3.gemneye.xyz` | Public application URL. |
+| `MM3_WEB_DIR` | `/app/web` | Directory containing web templates and static assets. |
 | `MM3_DB_PATH` | `/data/mm3.db` | SQLite database file path. |
 | `MM3_AUDIO_DIR` | `/data/audio` | Output directory for audio WAV files. |
 | `MM3_MAX_IN_FLIGHT` | `2` | Global concurrent job limit. |
 | `LLM_BASE_URL` | *(Infisical)* | OpenAI-compatible LLM gateway URL. |
 | `LLM_API_KEY` | *(Infisical)* | LLM authorization key. |
 | `LLM_MODEL_ID` | *(Infisical)* | LLM model ID (e.g. `deepseek-v4-flash`). |
-| `LLM_THINKING` | `disabled` | Assistant thinking mode (`disabled`, `enabled`, `off`). |
-| `LLM_REASONING_EFFORT` | `none` | OpenAI reasoning effort (`none`, `low`, `medium`, `high`). |
+| `LLM_THINKING` | `disabled` | LLM thinking mode (`disabled`, `enabled`, `off`). |
+| `LLM_REASONING_EFFORT` | `none` | LLM reasoning effort (`none`, `low`, `medium`, `high`). |
 | `RUNPOD_ENDPOINT` | *(Infisical)* | RunPod serverless worker URL. |
 | `RUNPOD_API_KEY` | *(Infisical)* | RunPod authorization key. |
 
