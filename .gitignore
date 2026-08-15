@@ -36,6 +36,8 @@ infisical.env
 CLAUDE.md
 AGENTS.md
 
-# OS / IDE
+# OS / IDE / Resource archives
 .DS_Store
 Thumbs.db
+*.zip
+favicon_io.zip
