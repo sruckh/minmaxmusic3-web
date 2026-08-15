@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="en">
+<head>{{template "head" .}}</head>
+<body>
+<div class="shell" x-data="mm3Page()">
+  {{template "nav" .}}
+
+  <!-- AI assistant panel (progressive enhancement) -->
+  <section class="panel assistant-panel" style="margin-bottom: calc(var(--unit)*2)" x-show="showAssistant" x-cloak>
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+      <span class="eyebrow"><span class="dot" style="background:var(--violet)"></span>AI ASSISTANT</span>
+      <button type="button" class="icon-btn" @click="showAssistant = false" aria-label="Close assistant">✕</button>
+    </div>
+    <p style="font-size:0.85rem; color:var(--text-secondary); margin:0 0 12px 0;">Describe your song idea in plain English — the assistant drafts lyrics with section tags and a style caption for you.</p>
+    <div style="display:flex; gap:8px; flex-wrap:wrap;">
+      <textarea class="input" name="idea" x-model="idea" rows="2" style="flex:1; min-width:200px;"
+        placeholder="A bittersweet folk song about leaving a coastal town in the rain…"></textarea>
+      <button type="button" class="btn" @click="ask()" :disabled="thinking || !idea.trim()" style="align-self:flex-end;">
+        <span x-show="!thinking">Draft it</span>
+        <span x-show="thinking" x-cloak class="spin" aria-hidden="true"></span>
+        <span x-show="thinking" x-cloak>Drafting…</span>
+      </button>
+    </div>
+    <p class="help" style="color:var(--warn); margin-top:8px;" x-show="error" x-cloak x-text="error" role="alert"></p>
+  </section>
+
+  <!-- Generation Form & Vertical Stack Accordion Layout -->
+  <form id="gen" hx-post="/jobs" hx-target="#job" hx-swap="innerHTML">
+    <main class="vertical-stack">
+
+      <!-- SECTION 1: LYRICS & STYLE (Accordion) -->
+      <section class="panel">
+        <div class="accordion-header" @click="openLyrics = !openLyrics" role="button" tabindex="0">
+          <span class="eyebrow">
+            <span class="dot" style="background:var(--teal)"></span>CH.01 — LYRICS &amp; STYLE
+          </span>
+          <div style="display:flex; align-items:center; gap:12px;">
+            <button type="button" class="btn btn--ghost btn--sm" @click.stop="showAssistant = !showAssistant" style="padding:2px 8px; font-size:11px;">
+              ✨ Assistant
+            </button>
+            <span class="accordion-toggle-icon" :class="{ 'open': openLyrics }">▼</span>
+          </div>
+        </div>
+
+        <div class="accordion-body" x-show="openLyrics" x-transition>
+          <div class="field-group" style="margin-top:12px;">
+            <label for="input" class="field-label">Lyrics Prompt</label>
+            <textarea id="input" name="input" rows="12" class="input-lyrics" x-model="lyrics"
+              placeholder="[Intro]&#10;Morning light filtering through the pine&#10;&#10;[Chorus]&#10;Softly the world begins to breathe"></textarea>
+            <div class="charcount"><span x-text="lyrics.length">0</span> chars</div>
+          </div>
+
+          <div class="field-group">
+            <span class="field-label">Section Tags</span>
+            <div class="tags" role="group" aria-label="Section tags">
+              {{range $t := .Tags}}<button type="button" class="tag" data-tag="[{{ $t }}]"
+                onclick="insertTag(this)">{{ $t }}</button>{{end}}
+            </div>
+          </div>
+
+          <div class="field-group">
+            <span class="field-label">Style Caption</span>
+            <textarea class="input input-caption" id="instructions" name="instructions" rows="6" x-model="caption"
+              placeholder="Global Metadata: acoustic pop, 96 BPM, C major, warm and intimate building to a wide final chorus.&#10;Vocal Details: soft female lead, close and breathy, stacked harmonies in the chorus.&#10;Arrangement: fingerpicked guitar and soft piano; brushed drums and upright bass enter at the chorus."></textarea>
+          </div>
+        </div>
+      </section>
+
+      <!-- SECTION 2: CONFIGURATION SETTINGS (Accordion) -->
+      <section class="panel">
+        <div class="accordion-header" @click="openConfig = !openConfig" role="button" tabindex="0">
+          <span class="eyebrow">
+            <span class="dot" style="background:var(--violet)"></span>CH.02 — CONFIGURATION
+          </span>
+          <span class="accordion-toggle-icon" :class="{ 'open': openConfig }">▼</span>
+        </div>
+
+        <div class="accordion-body" x-show="openConfig" x-transition>
+          <div class="field-group" style="margin-top:12px;">
+
+            <!-- BPM Slider -->
+            <div class="rack-row">
+              <span class="field-label">BPM</span>
+              <input type="range" id="bpm" min="60" max="180" value="96" x-model="bpm">
+              <span class="bpm-value" x-text="bpm">96</span>
+            </div>
+
+            <!-- Length Control (15s to 300s / 5m max with centered step input) -->
+            <div class="rack-row" style="flex-direction:column; align-items:stretch;">
+              <div style="display:flex; justify-content:space-between; align-items:center;">
+                <span class="field-label">Length</span>
+                <span class="duration-display" x-text="formatDur(dur)">30s</span>
+              </div>
+              <input type="hidden" name="audio_duration" :value="dur">
+
+              <div class="duration-control-row" style="margin-top:6px;">
+                <input type="range" class="duration-slider" min="15" max="300" step="5" x-model.number="dur">
+                <div class="duration-step-wrap">
+                  <button type="button" class="step-btn" @click="dur = Math.max(15, dur - 5)" aria-label="Decrease length">-</button>
+                  <input type="number" class="duration-input" min="15" max="300" step="5" x-model.number="dur">
+                  <button type="button" class="step-btn" @click="dur = Math.min(300, dur + 5)" aria-label="Increase length">+</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Key Dropdown -->
+            <div class="rack-row">
+              <span class="field-label">Key</span>
+              <select id="key" x-model="key">
+                <option value="C Major">C Major</option>
+                <option value="A Minor">A Minor</option>
+                <option value="G Major">G Major</option>
+                <option value="E Minor">E Minor</option>
+                <option value="D Major">D Major</option>
+                <option value="F# Minor">F# Minor</option>
+              </select>
+            </div>
+
+            <!-- Model Dropdown -->
+            <div class="rack-row">
+              <span class="field-label">Model</span>
+              <select id="model">
+                <option>MiniMax-Music3</option>
+              </select>
+            </div>
+
+            <!-- Seed Input & Shuffle -->
+            <div class="rack-row">
+              <span class="field-label">Seed</span>
+              <div class="seed-row">
+                <input type="number" id="seed" name="seed" x-model.number="seed" placeholder="Optional">
+                <button type="button" class="icon-btn" @click="seed = Math.floor(100000 + Math.random()*899999)" aria-label="Randomize seed">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3l4 4-4 4M3 7h13M7 21l-4-4 4-4M21 17H8"/></svg>
+                </button>
+              </div>
+            </div>
+
+            <!-- Vocals Rocker Toggle -->
+            <div class="rack-row toggle-row">
+              <span class="field-label">Vocals</span>
+              <div style="display:flex;align-items:center;">
+                <button type="button" class="toggle" id="vocals-toggle" :aria-pressed="vocals" @click="vocals = !vocals" :aria-label="vocals ? 'Vocals on' : 'Vocals off'"><span class="knob"></span></button>
+                <span class="toggle-label" x-text="vocals ? 'On' : 'Off'">On</span>
+              </div>
+            </div>
+
+          </div>
+        </div>
+      </section>
+
+      <!-- SECTION 3: MASTER OUT & GENERATE -->
+      <section class="panel panel-master">
+        <span class="eyebrow" style="margin-bottom:12px;"><span class="dot" id="rec-dot" style="background:var(--idle)"></span>MASTER OUT</span>
+
+        <div class="meter" id="meter" aria-hidden="true"></div>
+
+        <button type="submit" class="generate-btn" id="generate" :disabled="!lyrics.trim() || !caption.trim()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 4l14 8-14 8V4z" fill="currentColor" stroke="none"/></svg>
+          <span id="generate-label">Generate</span>
+        </button>
+
+        <div class="status-line" role="status" aria-live="polite">
+          <span id="status-text">READY</span> <span class="timer" id="status-timer"></span>
+        </div>
+      </section>
+
+    </main>
+  </form>
+
+  <!-- SECTION 4: Job output fragment area -->
+  <div id="job" style="margin-top: calc(var(--unit)*2)"></div>
+
+  <p class="footer-note">MM3 — local session, nothing leaves your browser</p>
+</div>
+
+<script>
+function insertTag(btn) {
+  const ta = document.getElementById('input');
+  const tag = btn.dataset.tag;
+  const before = ta.value.slice(0, ta.selectionStart);
+  const after = ta.value.slice(ta.selectionStart);
+  const nl = before && !before.endsWith('\n') ? '\n' : '';
+  ta.value = before + nl + tag + '\n' + after;
+  ta.dispatchEvent(new Event('input'));
+  ta.focus();
+}
+
+function mm3Page() {
+  return {
+    idea: '', lyrics: '', caption: '', dur: 30, seed: null, bpm: 96, key: 'C Major', vocals: true,
+    showAssistant: false, thinking: false, error: '',
+    openLyrics: true, openConfig: true,
+    formatDur(sec) {
+      if (!sec) return '30s';
+      sec = Math.min(300, Math.max(15, parseInt(sec, 10) || 30));
+      const m = Math.floor(sec / 60);
+      const s = sec % 60;
+      if (m > 0) return s > 0 ? `${m}m ${s}s` : `${m}m`;
+      return `${s}s`;
+    },
+    async ask() {
+      this.thinking = true; this.error = '';
+      try {
+        const body = new URLSearchParams({ idea: this.idea });
+        const res = await fetch('/assistant', { method: 'POST', body });
+        if (!res.ok) {
+          const map = { 'assistant-timeout': 'The assistant took too long — try again in a minute.',
+                        'assistant-unavailable': 'The assistant is unavailable right now. You can still write it yourself below.',
+                        'assistant-unparseable': 'The assistant gave an unusable draft — try rephrasing your idea.' };
+          const j = await res.json().catch(() => ({}));
+          this.error = map[j.error] || 'Something went wrong — try again.';
+          return;
+        }
+        const d = await res.json();
+        this.lyrics = d.input;
+        this.caption = d.instructions;
+        if (d.audio_duration) this.dur = Math.min(300, Math.max(15, d.audio_duration));
+        if (d.seed != null) this.seed = d.seed;
+        this.showAssistant = false;
+      } catch { this.error = 'Network problem — try again.'; }
+      finally { this.thinking = false; }
+    }
+  };
+}
+
+// Peak meter initialization
+document.addEventListener('DOMContentLoaded', function() {
+  var meterEl = document.getElementById('meter');
+  if (!meterEl) return;
+  var METER_BARS = 42;
+  for (var i = 0; i < METER_BARS; i++) {
+    var bar = document.createElement('div');
+    bar.className = 'bar';
+    bar.style.height = '4px';
+    meterEl.appendChild(bar);
+  }
+  var bars = meterEl.querySelectorAll('.bar');
+  var idleTick = 0;
+  var reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  function idleFrame() {
+    idleTick++;
+    bars.forEach(function(b, i) {
+      var h = 4 + Math.abs(Math.sin((idleTick/14) + i*0.5)) * 10;
+      b.style.height = h + 'px';
+      b.style.background = 'var(--idle)';
+    });
+  }
+  if (!reduceMotion) { setInterval(idleFrame, 220); } else { idleFrame(); }
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,28 @@
+.git
+.gitignore
+.goals
+.outline
+.serena
+node_modules
+npm-debug.log*
+
+# ICM/planning artifacts are not runtime inputs.
+stages
+setup
+output
+_config
+IDENTITY.md
+CONTEXT.md
+AGENTS.md
+CLAUDE.md
+DESIGN.md
+index-dark.html
+index-light.html
+favicon_io.zip
+
+# Local/generated state.
+*.db
+*.db-shm
+*.db-wal
+data
+coverage*

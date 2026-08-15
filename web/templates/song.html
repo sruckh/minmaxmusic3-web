@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>{{template "head" .}}</head>
+<body>
+<div class="shell">
+  {{template "nav" .}}
+  <main>
+    <div style="margin-bottom: 12px;">
+      <a class="btn btn--ghost btn--sm" href="/history" style="display:inline-flex; align-items:center; gap:6px;">← Back to history</a>
+    </div>
+    <div class="panel" style="margin-bottom: calc(var(--unit)*2)">
+      <h2 style="margin-top:0">{{.Song.Title}}</h2>
+      <div class="player">
+        <div class="player-meta">
+          <span class="badge badge--done"><span class="dot"></span>Ready</span>
+          <span>{{duration .Song.Duration}}</span>
+          {{if .Song.Seed}}<span>seed {{.Song.Seed}}</span>{{end}}
+          <span>{{.Song.Engine}}</span>
+          <span x-data="{ formatted: '' }"
+                x-init="formatted = new Date('{{.Song.CreatedAt.Format "2006-01-02T15:04:05Z"}}').toLocaleString(undefined, { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })"
+                x-text="formatted || '{{.Song.CreatedAt.Format "Jan 2, 2006 15:04"}}'">
+            {{.Song.CreatedAt.Format "Jan 2, 2006 15:04"}}
+          </span>
+        </div>
+        <audio controls preload="metadata" src="/audio/{{.Song.ID}}"></audio>
+        <div style="display:flex;gap:.75rem;margin-top:.75rem">
+          <a class="btn btn--secondary" href="/audio/{{.Song.ID}}" download>Download WAV</a>
+          <button type="button" class="btn btn--ghost" hx-post="/songs/{{.Song.ID}}/regenerate"
+            hx-target="#job" hx-swap="innerHTML">Generate again with this seed</button>
+        </div>
+      </div>
+    </div>
+
+    <section class="panel" style="margin-bottom: calc(var(--unit)*2)">
+      <span class="eyebrow"><span class="dot" style="background:var(--teal)"></span>LYRICS</span>
+      <pre style="font-family:var(--font-mono); font-size:0.85rem; line-height:1.6; white-space:pre-wrap; color:var(--text-primary); margin-top:8px;">{{.Song.Lyrics}}</pre>
+    </section>
+
+    <section class="panel">
+      <span class="eyebrow"><span class="dot" style="background:var(--violet)"></span>STYLE CAPTION</span>
+      <pre style="font-family:var(--font-mono); font-size:0.85rem; line-height:1.6; white-space:pre-wrap; color:var(--text-primary); margin-top:8px;">{{.Song.Caption}}</pre>
+    </section>
+
+    <div id="job" style="margin-top: calc(var(--unit)*2)"></div>
+  </main>
+
+  <p class="footer-note">MM3 — local session, nothing leaves your browser</p>
+</div>
+</body>
+</html>

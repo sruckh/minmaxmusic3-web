@@ -1,0 +1,32 @@
+{{if .Done}}
+  {{if .Song}}
+  <div class="player">
+    <div class="player-meta">
+      <span class="badge badge--done"><span class="dot"></span>Ready</span>
+      <span>{{duration .Song.Duration}}</span>
+      {{if .Song.Seed}}<span>seed {{.Song.Seed}}</span>{{end}}
+      <span>{{.Song.Engine}}</span>
+    </div>
+    <audio controls preload="metadata" src="/audio/{{.Song.ID}}"></audio>
+    <div style="display:flex;gap:.75rem;margin-top:.75rem">
+      <a class="btn btn--secondary" href="/audio/{{.Song.ID}}" download>Download WAV</a>
+      <a class="btn btn--ghost" href="/history">In your library</a>
+    </div>
+  </div>
+  {{else}}
+  <div class="alert alert--error" role="alert">
+    <div><b>That didn't work.</b>
+    <p>{{if .Job.Error}}{{.Job.Error}}{{else}}The generation failed.{{end}}</p>
+    <p><button type="button" class="btn btn--ghost" onclick="document.getElementById('gen').requestSubmit()">Try again</button></p></div>
+  </div>
+  {{end}}
+{{else}}
+  <div class="panel" id="job-{{.Job.ID}}"
+       hx-get="/jobs/{{.Job.ID}}" hx-trigger="every 3s" hx-target="#job" hx-swap="innerHTML">
+    <div style="display:flex;align-items:center;gap:.75rem">
+      <span class="spin" aria-hidden="true"></span>
+      <span class="badge badge--running"><span class="dot"></span>{{if eq .Job.State "queued"}}Queued{{else}}Generating{{end}}</span>
+      <span class="status-line" style="margin-top:0">A full song can take a few minutes — this page updates itself.</span>
+    </div>
+  </div>
+{{end}}
