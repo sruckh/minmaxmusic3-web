@@ -1,0 +1,130 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 440" width="100%" height="auto">
+  <title>MM3 Console Hero Banner</title>
+  <defs>
+    <style>
+      @import url('https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,500;1,9..144,500&amp;family=IBM+Plex+Mono:wght@400;600&amp;family=Hanken+Grotesk:wght@400;600;700&amp;display=swap');
+
+      :root {
+        --bg-color: #2D0812;
+        --panel-bg: #450D1D;
+        --border-color: #701630;
+        --text-main: #FFFFFF;
+        --text-muted: #CABAC0;
+        --teal-accent: #004D71;
+        --crimson-hot: #E0004C;
+        --green-level: #44A400;
+        --violet-aux: #95009C;
+        --orange-clip: #E02800;
+        --mist-tint: #E5DCDF;
+        --rack-screw: #8C223E;
+      }
+
+      @media (prefers-color-scheme: light) {
+        :root {
+          --bg-color: #F4EFF1;
+          --panel-bg: #FFFFFF;
+          --border-color: #CABAC0;
+          --text-main: #1A040B;
+          --text-muted: #5E1226;
+          --teal-accent: #004D71;
+          --crimson-hot: #C50043;
+          --green-level: #44A400;
+          --violet-aux: #95009C;
+          --orange-clip: #E02800;
+          --mist-tint: #E5DCDF;
+          --rack-screw: #B0A0A6;
+        }
+      }
+
+      .bg { fill: var(--bg-color); }
+      .panel { fill: var(--panel-bg); stroke: var(--border-color); stroke-width: 2; rx: 12px; }
+      .title-text { font-family: 'Fraunces', serif; font-style: italic; font-weight: 500; fill: var(--text-main); font-size: 48px; }
+      .sub-title { font-family: 'IBM Plex Mono', monospace; font-size: 14px; fill: var(--text-muted); letter-spacing: 0.12em; text-transform: uppercase; }
+      .badge-label { font-family: 'IBM Plex Mono', monospace; font-size: 12px; fill: #FFFFFF; font-weight: 600; }
+      .body-desc { font-family: 'Hanken Grotesk', sans-serif; font-size: 16px; fill: var(--text-muted); line-height: 1.5; }
+      .rack-screw { fill: var(--rack-screw); }
+      .meter-cap { font-family: 'IBM Plex Mono', monospace; font-size: 11px; fill: var(--text-muted); }
+    </style>
+
+    <linearGradient id="meterGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#004D71" />
+      <stop offset="40%" stop-color="#44A400" />
+      <stop offset="70%" stop-color="#95009C" />
+      <stop offset="88%" stop-color="#E0004C" />
+      <stop offset="100%" stop-color="#E02800" />
+    </linearGradient>
+  </defs>
+
+  <!-- Outer Canvas -->
+  <rect width="1200" height="440" rx="16" class="bg" />
+
+  <!-- Outboard Hardware Screws -->
+  <circle cx="30" cy="30" r="7" class="rack-screw" />
+  <circle cx="1170" cy="30" r="7" class="rack-screw" />
+  <circle cx="30" cy="410" r="7" class="rack-screw" />
+  <circle cx="1170" cy="410" r="7" class="rack-screw" />
+
+  <!-- Main Outboard Console Chassis -->
+  <rect x="60" y="50" width="1080" height="340" class="panel" />
+
+  <!-- Channel Strip Left Header -->
+  <g transform="translate(100, 90)">
+    <!-- Logo Icon / Record Button Motif -->
+    <rect x="0" y="0" width="56" height="56" rx="14" fill="var(--crimson-hot)" />
+    <circle cx="28" cy="28" r="14" fill="#FFFFFF" />
+    <circle cx="28" cy="28" r="8" fill="var(--crimson-hot)" />
+
+    <!-- Title & Subtitle -->
+    <text x="76" y="36" class="title-text">MM3 Console</text>
+    <text x="78" y="58" class="sub-title">MINIMAX MUSIC 3 · OUTBOARD STUDIO WEBFONT</text>
+
+    <text x="0" y="105" class="body-desc">
+      A studio-grade Web Front-End &amp; AI Assistant for MiniMax Music 3 generation.
+    </text>
+    <text x="0" y="128" class="body-desc">
+      Built with Go, htmx, Alpine.js, Tailwind v4, SQLite WAL, and RunPod Serverless GPU inference.
+    </text>
+  </g>
+
+  <!-- Middle Hardware Peak Meter Panel -->
+  <g transform="translate(100, 260)">
+    <rect x="0" y="0" width="1000" height="48" rx="8" fill="#120207" stroke="var(--border-color)" stroke-width="1.5" />
+    <!-- Peak Meter Bars -->
+    <rect x="8" y="8" width="850" height="32" rx="4" fill="url(#meterGrad)" />
+    <!-- Active LED Cursor Indicator -->
+    <rect x="866" y="8" width="12" height="32" rx="2" fill="#E02800" />
+    <rect x="886" y="8" width="106" height="32" rx="4" fill="var(--panel-bg)" />
+    <text x="939" y="29" font-family="IBM Plex Mono" font-size="12" fill="var(--text-muted)" text-anchor="middle" font-weight="600">+6 dB</text>
+
+    <!-- Meter Scale Labels -->
+    <text x="12" y="66" class="meter-cap">IDLE (-40dB)</text>
+    <text x="340" y="66" class="meter-cap">SIGNAL (44A400)</text>
+    <text x="600" y="66" class="meter-cap">AI LAYER (95009C)</text>
+    <text x="770" y="66" class="meter-cap">HOT REC (E0004C)</text>
+    <text x="890" y="66" class="meter-cap">CLIP (E02800)</text>
+  </g>
+
+  <!-- Right Feature Badges / Hardware Modules -->
+  <g transform="translate(680, 95)">
+    <!-- Badge 1: Go Engine -->
+    <g transform="translate(0, 0)">
+      <rect width="180" height="36" rx="8" fill="var(--teal-accent)" />
+      <text x="90" y="23" class="badge-label" text-anchor="middle">GO 1.24 SERVER</text>
+    </g>
+    <!-- Badge 2: htmx + Alpine -->
+    <g transform="translate(195, 0)">
+      <rect width="205" height="36" rx="8" fill="var(--green-level)" />
+      <text x="102.5" y="23" class="badge-label" text-anchor="middle">HTMX + ALPINE.JS</text>
+    </g>
+    <!-- Badge 3: Fast LLM Assistant -->
+    <g transform="translate(0, 48)">
+      <rect width="220" height="36" rx="8" fill="var(--violet-aux)" />
+      <text x="110" y="23" class="badge-label" text-anchor="middle">FAST LLM ASSISTANT</text>
+    </g>
+    <!-- Badge 4: RunPod Serverless -->
+    <g transform="translate(235, 48)">
+      <rect width="165" height="36" rx="8" fill="var(--crimson-hot)" />
+      <text x="82.5" y="23" class="badge-label" text-anchor="middle">RUNPOD GPU</text>
+    </g>
+  </g>
+</svg>
