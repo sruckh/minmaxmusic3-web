@@ -1,8 +1,13 @@
 package server
 
 import (
+	"database/sql"
+	"errors"
+	"fmt"
 	"net/http"
+	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/sruckh/minmaxmusic3-web/internal/store"
@@ -80,3 +85,54 @@ func (s *Server) handleRegenerate(w http.ResponseWriter, r *http.Request) {
 	}
 	s.renderJob(w, j)
 }
+
+// handleDeleteSong removes a song and its audio file on disk, returning 200 for HTMX row removal.
+func (s *Server) handleDeleteSong(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	g, err := s.st.DeleteSong(id)
+	if err != nil {
+		s.log.Error("delete song", "id", id, "err", err)
+		http.Error(w, "Could not delete that song.", http.StatusInternalServerError)
+		return
+	}
+	if g == nil {
+		http.NotFound(w, r)
+		return
+	}
+	if g.AudioPath != "" {
+		if err := os.Remove(g.AudioPath); err != nil && !os.IsNotExist(err) {
+			s.log.Warn("delete audio file", "path", g.AudioPath, "err", err)
+		}
+	}
+	if r.Header.Get("HX-Request") == "true" {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	http.Redirect(w, r, "/history", http.StatusSeeOther)
+}
+
+// handleUpdateSongTitle updates the title of a song.
+func (s *Server) handleUpdateSongTitle(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	title := strings.TrimSpace(r.FormValue("title"))
+	if title == "" {
+		http.Error(w, "Title cannot be empty.", http.StatusBadRequest)
+		return
+	}
+	if len(title) > 100 {
+		title = title[:100]
+	}
+	if err := s.st.UpdateSongTitle(id, title); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			http.NotFound(w, r)
+			return
+		}
+		s.log.Error("update song title", "id", id, "err", err)
+		http.Error(w, "Could not update title.", http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = fmt.Fprint(w, title)
+}
+
+

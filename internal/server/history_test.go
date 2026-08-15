@@ -2,6 +2,7 @@ package server
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
@@ -83,3 +84,93 @@ func TestRegenerateQueuesSameInputs(t *testing.T) {
 		t.Fatalf("regenerate did not queue: %q", res.Body.String())
 	}
 }
+
+func TestDeleteSong(t *testing.T) {
+	h, id := completeOneSong(t)
+
+	// Check that song detail and audio work before delete
+	detail := get(h, "/songs/"+id)
+	if detail.Code != 200 {
+		t.Fatalf("GET /songs/%s = %d", id, detail.Code)
+	}
+	audioRes := get(h, "/audio/"+id)
+	if audioRes.Code != 200 {
+		t.Fatalf("GET /audio/%s = %d", id, audioRes.Code)
+	}
+
+	// Delete with HTMX header
+	req := httptest.NewRequest("DELETE", "/songs/"+id, nil)
+	req.Header.Set("HX-Request", "true")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("DELETE /songs/%s = %d", id, rec.Code)
+	}
+
+	// Verify song detail is 404
+	detailAfter := get(h, "/songs/"+id)
+	if detailAfter.Code != 404 {
+		t.Fatalf("GET /songs/%s after delete = %d, want 404", id, detailAfter.Code)
+	}
+
+	// Verify audio is 404
+	audioAfter := get(h, "/audio/"+id)
+	if audioAfter.Code != 404 {
+		t.Fatalf("GET /audio/%s after delete = %d, want 404", id, audioAfter.Code)
+	}
+
+	// Verify history no longer lists the song ID
+	hist := get(h, "/history")
+	if hist.Code != 200 {
+		t.Fatalf("GET /history = %d", hist.Code)
+	}
+	if strings.Contains(hist.Body.String(), id) {
+		t.Fatalf("history still contains song %s after delete", id)
+	}
+}
+
+func TestUpdateSongTitle(t *testing.T) {
+	h, id := completeOneSong(t)
+
+	// Update title
+	form := url.Values{"title": {"Midnight Electric Jazz"}}
+	res := postForm(h, "/songs/"+id+"/title", form)
+	if res.Code != 200 {
+		t.Fatalf("POST /songs/%s/title = %d: %s", id, res.Code, res.Body.String())
+	}
+	if res.Body.String() != "Midnight Electric Jazz" {
+		t.Fatalf("expected response 'Midnight Electric Jazz', got %q", res.Body.String())
+	}
+
+	// Verify history displays new title
+	hist := get(h, "/history")
+	if hist.Code != 200 {
+		t.Fatalf("GET /history = %d", hist.Code)
+	}
+	if !strings.Contains(hist.Body.String(), "Midnight Electric Jazz") {
+		t.Fatalf("history missing updated title 'Midnight Electric Jazz': %s", hist.Body.String())
+	}
+
+	// Verify song detail displays new title
+	detail := get(h, "/songs/"+id)
+	if detail.Code != 200 {
+		t.Fatalf("GET /songs/%s = %d", id, detail.Code)
+	}
+	if !strings.Contains(detail.Body.String(), "Midnight Electric Jazz") {
+		t.Fatalf("detail missing updated title 'Midnight Electric Jazz': %s", detail.Body.String())
+	}
+
+	// Empty title rejected
+	badRes := postForm(h, "/songs/"+id+"/title", url.Values{"title": {"   "}})
+	if badRes.Code != 400 {
+		t.Fatalf("expected 400 for empty title, got %d", badRes.Code)
+	}
+
+	// Non-existent song 404
+	missingRes := postForm(h, "/songs/non-existent/title", form)
+	if missingRes.Code != 404 {
+		t.Fatalf("expected 404 for missing song, got %d", missingRes.Code)
+	}
+}
+
+
