@@ -297,6 +297,50 @@ func (s *Store) Songs(limit, offset int) ([]*Song, error) {
 	return out, rows.Err()
 }
 
+// DeleteSong removes a song and its associated job in a single transaction.
+// It returns the deleted song metadata (or nil if not found) so the caller can
+// clean up the audio file from disk.
+func (s *Store) DeleteSong(id string) (*Song, error) {
+	g, err := s.Song(id)
+	if err != nil || g == nil {
+		return g, err
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(`DELETE FROM songs WHERE id = ?`, id); err != nil {
+		return nil, err
+	}
+	if g.JobID != "" {
+		if _, err := tx.Exec(`DELETE FROM jobs WHERE id = ?`, g.JobID); err != nil {
+			return nil, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return g, nil
+}
+
+// UpdateSongTitle updates the title of a song.
+func (s *Store) UpdateSongTitle(id, title string) error {
+	res, err := s.db.Exec(`UPDATE songs SET title = ? WHERE id = ?`, title, id)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
 func join(parts []string) string {
 	out := ""
 	for i, p := range parts {

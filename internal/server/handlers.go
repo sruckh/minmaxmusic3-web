@@ -30,6 +30,8 @@ func (s *Server) registerFeatures(mux *http.ServeMux) {
 	mux.HandleFunc("GET /history", s.handleHistory)
 	mux.HandleFunc("GET /songs/{id}", s.handleSongDetail)
 	mux.HandleFunc("POST /songs/{id}/regenerate", s.handleRegenerate)
+	mux.HandleFunc("DELETE /songs/{id}", s.handleDeleteSong)
+	mux.HandleFunc("POST /songs/{id}/title", s.handleUpdateSongTitle)
 }
 
 // handleAssistant proxies the LLM and returns the parsed draft as JSON for
@@ -179,9 +181,15 @@ func (s *Server) handleAudio(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	w.Header().Set("Content-Type", "audio/wav")
+	contentType := "audio/mp4"
+	ext := ".m4a"
+	if strings.HasSuffix(strings.ToLower(g.AudioPath), ".wav") {
+		contentType = "audio/wav"
+		ext = ".wav"
+	}
+	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Content-Disposition",
-		fmt.Sprintf("inline; filename=%q.wav", g.ID))
+		fmt.Sprintf("inline; filename=%q%s", g.ID, ext))
 	http.ServeFile(w, r, g.AudioPath)
 }
 
