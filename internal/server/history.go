@@ -104,11 +104,21 @@ func (s *Server) handleDeleteSong(w http.ResponseWriter, r *http.Request) {
 			s.log.Warn("delete audio file", "path", g.AudioPath, "err", err)
 		}
 	}
+	target := r.URL.Query().Get("redirect")
+	if target == "" && strings.Contains(r.Header.Get("HX-Current-URL"), "/songs/") {
+		target = "/history"
+	}
 	if r.Header.Get("HX-Request") == "true" {
+		if target != "" {
+			w.Header().Set("HX-Redirect", target)
+		}
 		w.WriteHeader(http.StatusOK)
 		return
 	}
-	http.Redirect(w, r, "/history", http.StatusSeeOther)
+	if target == "" {
+		target = "/history"
+	}
+	http.Redirect(w, r, target, http.StatusSeeOther)
 }
 
 // handleUpdateSongTitle updates the title of a song.
