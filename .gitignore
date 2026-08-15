@@ -16,6 +16,7 @@
 *.db-shm
 *.wav
 *.mp3
+*.m4a
 
 # Local secrets & configs
 .env
@@ -27,6 +28,7 @@ client_secret.gpg
 infisical.env
 
 # Local agent & tooling temp
+.goals/
 .outline/
 .claude/settings.local.json
 .tokensave/
