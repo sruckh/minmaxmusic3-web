@@ -77,7 +77,7 @@
     <text x="125" y="19" font-family="IBM Plex Mono" font-size="11" fill="#FFF" font-weight="600" text-anchor="middle">3. PERSISTENT DISK (/data)</text>
     <text x="20" y="55" class="node-title">SQLite WAL (mm3.db)</text>
     <text x="20" y="78" class="node-sub">jobs &amp; songs Tables</text>
-    <text x="20" y="98" class="node-sub">/data/audio/*.wav Files</text>
+    <text x="20" y="98" class="node-sub">/data/audio/*.m4a Files</text>
   </g>
 
   <!-- Node 4: OmniRoute LLM Proxy -->
@@ -98,7 +98,7 @@
     <text x="100" y="21" font-family="IBM Plex Mono" font-size="12" fill="#FFF" font-weight="600" text-anchor="middle">5. RUNPOD GPU</text>
     <text x="15" y="62" class="node-title">MiniMax Music 3</text>
     <text x="15" y="85" class="node-sub">POST /runsync</text>
-    <text x="15" y="105" class="node-sub">32 kHz Stereo WAV</text>
+    <text x="15" y="105" class="node-sub">WAV → M4A (ffmpeg)</text>
     <text x="15" y="125" class="node-sub">S3 / Base64 Output</text>
   </g>
 
@@ -115,8 +115,8 @@
   <line x1="600" y1="170" x2="680" y2="170" class="conn-line" />
   <polygon points="680,170 672,165 672,175" class="arrow" />
 
-  <!-- 2 -> 5 -->
-  <path d="M 600,220 L 910,220 L 940,220" class="conn-line" fill="none" />
+  <!-- 2 -> 5 (routed around OmniRoute LLM) -->
+  <path d="M 600,220 H 635 Q 645,220 645,230 V 290 Q 645,300 655,300 H 910 Q 920,300 920,290 V 230 Q 920,220 930,220 H 940" class="conn-line" fill="none" />
   <polygon points="940,220 932,215 932,225" class="arrow" />
 
 </svg>

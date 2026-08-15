@@ -6,7 +6,7 @@
 
 <p align="center">
   <strong>A web interface for creating music using text-to-song inference powered by MiniMax Music 3.</strong><br>
-  Turn text ideas, tagged lyrics, and style captions into full 32 kHz stereo WAV audio tracks.
+  Turn text ideas, tagged lyrics, and style captions into full stereo M4A audio tracks (192 kbps AAC).
 </p>
 
 <p align="center">
@@ -31,7 +31,7 @@
 
 ### 🎵 Text-to-Song Music Generation
 - Generate full-length music tracks (up to 300 seconds) from text lyrics and style captions.
-- Outputs high-quality **32 kHz 16-bit stereo WAV** audio files.
+- Outputs high-quality **stereo M4A (192 kbps AAC)** audio files.
 
 ### 🪄 AI Songwriting & Style Assistant
 - Integrated AI assistant (`POST /assistant`) that drafts tagged lyrics (`[Verse]`, `[Chorus]`, `[Bridge]`, `[Outro]`) and structured style descriptions from a simple prompt.
@@ -45,11 +45,10 @@
 ### 💾 Song Library & Playback
 - **SQLite Database**: Persists job states and song metadata in `/data/mm3.db` using WAL mode.
 - **Local Timezone Display**: Creation timestamps automatically format in the user's local browser timezone.
-- **Playback & Download**: Dedicated song playback page with audio player, lyrics display, style caption, seed replay, and a `← Back to history` button.
+- **Playback & Management**: Dedicated song playback page with audio player, lyrics display, style caption, seed replay, inline title editing, and deletion.
 
 ### 🔒 Secure Deployment
 - **Zero Hardcoded Secrets**: Secrets (`RUNPOD_API_KEY`, `LLM_API_KEY`) are injected via Infisical Universal Auth machine identities.
-- **Isolated Network Shape**: Container runs with zero published host ports behind Nginx Proxy Manager on Docker `shared_net`.
 
 ---
 
@@ -63,7 +62,7 @@
 1. **User Request**: User enters a song concept into the AI assistant or fills in the generation form.
 2. **AI Assistant (`POST /assistant`)**: Proxies to OmniRoute / LLM gateway with thinking disabled (`thinking: disabled`).
 3. **Job Queue (`POST /jobs`)**: Validates input and stores a queued job in SQLite (`/data/mm3.db`).
-4. **Background Worker**: Dequeues jobs, sends inference requests to RunPod GPU (`POST /runsync`), downloads WAV audio to `/data/audio/`, and updates the database.
+4. **Background Worker**: Dequeues jobs, sends inference requests to RunPod GPU (`POST /runsync`), transcodes audio to stereo 192 kbps M4A (`/data/audio/`), and updates the database.
 5. **htmx Polling**: Browser polls `GET /jobs/{id}` and updates the player once generation is complete.
 
 ---
@@ -105,7 +104,9 @@ time=2026-08-15T19:04:58.012Z level=INFO msg=listening addr=:8080
 | `GET /history` | `GET` | Paginated song library sorted newest-first with local timestamps. |
 | `GET /songs/{id}` | `GET` | Playback detail page with lyrics, caption, seed, and history navigation. |
 | `POST /songs/{id}/regenerate` | `POST` | Re-queue generation job using the same inputs and seed. |
-| `GET /audio/{id}` | `GET` | Stream or download generated WAV audio file. |
+| `POST /songs/{id}/title` | `POST` | Update song title from the library. |
+| `DELETE /songs/{id}` | `DELETE` | Delete song, purge database records, and remove audio file. |
+| `GET /audio/{id}` | `GET` | Stream or download generated M4A audio file. |
 | `GET /healthz` | `GET` | Healthcheck endpoint (`200 OK`). |
 
 ---
@@ -115,10 +116,9 @@ time=2026-08-15T19:04:58.012Z level=INFO msg=listening addr=:8080
 | Environment Variable | Default Value | Description |
 |---|---|---|
 | `MM3_ADDR` | `:8080` | Server listen address. |
-| `MM3_PUBLIC_URL` | `https://mm3.gemneye.xyz` | Public application URL. |
 | `MM3_WEB_DIR` | `/app/web` | Directory containing web templates and static assets. |
 | `MM3_DB_PATH` | `/data/mm3.db` | SQLite database file path. |
-| `MM3_AUDIO_DIR` | `/data/audio` | Output directory for audio WAV files. |
+| `MM3_AUDIO_DIR` | `/data/audio` | Output directory for audio M4A files. |
 | `MM3_MAX_IN_FLIGHT` | `2` | Global concurrent job limit. |
 | `LLM_BASE_URL` | *(Infisical)* | OpenAI-compatible LLM gateway URL. |
 | `LLM_API_KEY` | *(Infisical)* | LLM authorization key. |
