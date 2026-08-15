@@ -1,0 +1,56 @@
+name: mm3
+
+services:
+  app:
+    build:
+      context: .
+      target: runtime
+    image: mm3-web:latest
+    container_name: mm3-app
+    restart: unless-stopped
+    # Deliberately no `ports:` — reachable only on shared_net, where Nginx
+    # Proxy Manager forwards mm3.gemneye.xyz to it and Cloudflare
+    # terminates TLS in front of that.
+    expose:
+      - "8080"
+    networks:
+      - shared_net
+    environment:
+      MM3_PUBLIC_URL: https://mm3.gemneye.xyz
+      MM3_MAX_IN_FLIGHT: ${MM3_MAX_IN_FLIGHT:-2}
+      # Universal Auth machine identity — the entrypoint trades these for a
+      # short-lived token and runs the app under `infisical run`, which puts
+      # the LLM_*/RUNPOD_* secrets straight into the app's environment.
+      # Export them into your shell before `docker compose up`
+      # (see scripts/env.sh); never commit them. App secrets themselves are
+      # NOT listed here — they arrive only via infisical run.
+      INFISICAL_DOMAIN: ${INFISICAL_HOST:-}
+      INFISICAL_PROJECT_ID: ${INFISICAL_PROJECT_ID:-}
+      INFISICAL_ENV: ${INFISICAL_ENV:-dev}
+      INFISICAL_CLIENT_ID: ${INFISICAL_CLIENT_ID:-}
+      INFISICAL_CLIENT_SECRET_FILE: /run/secrets/infisical_client_secret
+    secrets:
+      - infisical_client_secret
+    volumes:
+      - data:/data
+
+  # Toolchain image for running the suite: docker compose run --rm test
+  test:
+    profiles: ["tools"]
+    build:
+      context: .
+      target: test
+    image: mm3-web-test:latest
+
+networks:
+  shared_net:
+    external: true
+
+volumes:
+  data:
+
+# Plaintext exists only in /dev/shm long enough for Compose to create the
+# read-only bind mount. scripts/up.sh creates and unlinks it.
+secrets:
+  infisical_client_secret:
+    file: ${INFISICAL_CLIENT_SECRET_FILE:?run scripts/up.sh (or source scripts/env.sh) first}

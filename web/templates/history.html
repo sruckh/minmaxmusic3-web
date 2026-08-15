@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>{{template "head" .}}</head>
+<body>
+<div class="shell">
+  {{template "nav" .}}
+  <main class="session">
+    <div class="session-head">
+      <div style="display:flex; align-items:center; gap:12px;">
+        <span class="eyebrow"><span class="dot" style="background:var(--green)"></span>SESSION LOG</span>
+        <h1 style="font-family:var(--font-display); font-size:1.2rem; font-weight:500; margin:0">Song history</h1>
+      </div>
+    </div>
+
+    {{if not .Songs}}
+    <div class="empty-state">
+      <p style="margin-bottom:12px">No songs in your library yet — describe a sound on the console and press Generate.</p>
+      <a class="btn btn--secondary" href="/">Write a song</a>
+    </div>
+    {{else}}
+    <table class="table">
+      <thead><tr><th>Title</th><th>Length</th><th>Seed</th><th>Engine</th><th>Created</th><th></th></tr></thead>
+      <tbody>
+        {{range .Songs}}
+        <tr class="row-link">
+          <td><a href="/songs/{{.ID}}" style="font-weight:600; text-decoration:none">{{.Title}}</a></td>
+          <td class="num">{{duration .Duration}}</td>
+          <td class="num">{{if .Seed}}{{.Seed}}{{else}}—{{end}}</td>
+          <td><span class="badge">{{.Engine}}</span></td>
+          <td class="num">
+            <time datetime="{{.CreatedAt.Format "2006-01-02T15:04:05Z"}}"
+                  x-data="{ formatted: '' }"
+                  x-init="formatted = new Date('{{.CreatedAt.Format "2006-01-02T15:04:05Z"}}').toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })"
+                  x-text="formatted || '{{.CreatedAt.Format "Jan 2, 15:04"}}'">
+              {{.CreatedAt.Format "Jan 2, 15:04"}}
+            </time>
+          </td>
+          <td><a class="btn btn--ghost btn--sm" href="/audio/{{.ID}}" download>Download</a></td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+    <nav aria-label="History pages" style="display:flex;gap:.75rem;margin-top:1.5rem" hx-boost="true">
+      {{if .HasPrev}}<a class="btn btn--ghost btn--sm" href="/history?page={{.PrevPage}}">Newer</a>{{end}}
+      {{if .HasNext}}<a class="btn btn--ghost btn--sm" href="/history?page={{.NextPage}}">Older</a>{{end}}
+    </nav>
+    {{end}}
+  </main>
+
+  <p class="footer-note">MM3 — local session, nothing leaves your browser</p>
+</div>
+</body>
+</html>

@@ -1,0 +1,37 @@
+# Binary and build outputs
+/mm3-server
+/out/
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Data & database files
+/data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.wav
+*.mp3
+
+# Local secrets & configs
+.env
+*.env
+*.pem
+*.key
+*.crt
+client_secret.gpg
+infisical.env
+
+# Local agent & tooling temp
+.outline/
+.claude/settings.local.json
+.tokensave/
+.headroom/
+
+# OS / IDE
+.DS_Store
+Thumbs.db

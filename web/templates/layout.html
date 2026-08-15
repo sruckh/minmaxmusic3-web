@@ -1,0 +1,47 @@
+{{define "head"}}
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MM3 — MiniMax Music 3 Console</title>
+<link rel="apple-touch-icon" sizes="180x180" href="/static/favicon/apple-touch-icon.png">
+<link rel="icon" type="image/png" sizes="32x32" href="/static/favicon/favicon-32x32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="/static/favicon/favicon-16x16.png">
+<link rel="manifest" href="/static/favicon/site.webmanifest">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,500;1,9..144,500&family=Hanken+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/app.css">
+<script>
+// Theme before first paint: stored choice, else system preference.
+(function () {
+  var t = localStorage.getItem('mm3-theme');
+  if (!t) t = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  document.documentElement.setAttribute('data-theme', t);
+})();
+</script>
+<script src="/static/htmx.min.js" defer></script>
+<script src="/static/alpine.min.js" defer></script>
+{{end}}
+
+{{define "nav"}}
+<header class="topbar">
+  <a class="wordmark" href="/">
+    <img src="/static/favicon/apple-touch-icon.png" alt="MM3 Logo" class="wordmark-logo">
+    <div class="wordmark-text">
+      <h1 class="brand-title">MM3</h1>
+      <span class="sub">MiniMax Music 3 Console</span>
+    </div>
+  </a>
+  <div class="topbar-right">
+    <span class="pwr"><span class="led"></span>PWR</span>
+    <nav class="nav-links">
+      <a href="/" {{if eq .Page "index"}}aria-current="page"{{end}}>Generate</a>
+      <a href="/history" {{if eq .Page "history"}}aria-current="page"{{end}}>History</a>
+    </nav>
+    <button type="button" class="theme-toggle" x-data="{ theme: document.documentElement.getAttribute('data-theme') || 'dark' }"
+            @click="theme = (theme === 'dark' ? 'light' : 'dark'); document.documentElement.setAttribute('data-theme', theme); localStorage.setItem('mm3-theme', theme)"
+            aria-label="Toggle dark / light theme">
+      <span x-text="theme.toUpperCase()">DARK</span>
+    </button>
+  </div>
+</header>
+{{end}}
