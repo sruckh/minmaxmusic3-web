@@ -8,6 +8,7 @@
 # --- test: run the suite -------------------------------------------------
 FROM golang:1.26-alpine@sha256:70b46548e42db77e0966aaf3619fd068734dc6c77584d526b91126504fd95816 AS test
 WORKDIR /src
+RUN apk add --no-cache ffmpeg
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
@@ -34,7 +35,7 @@ FROM infisical/cli@sha256:4fd22fff5878e9313e824ec7360b065c546fe5172f4c641e91220e
 # Alpine rather than distroless because the entrypoint needs a shell to
 # mint an Infisical token before exec'ing the process it wraps.
 FROM alpine:3.21 AS secretbase
-RUN apk add --no-cache ca-certificates tzdata wget
+RUN apk add --no-cache ca-certificates tzdata wget ffmpeg
 COPY --from=infisical-cli /bin/infisical /usr/local/bin/infisical
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod 0755 /usr/local/bin/entrypoint.sh

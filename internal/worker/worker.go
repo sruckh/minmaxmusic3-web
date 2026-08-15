@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/sruckh/minmaxmusic3-web/internal/audio"
 	"github.com/sruckh/minmaxmusic3-web/internal/runpod"
 	"github.com/sruckh/minmaxmusic3-web/internal/store"
 )
@@ -302,9 +303,9 @@ func (w *Worker) finish(ctx context.Context, j *store.Job, out *runpod.Output) e
 		return err
 	}
 	songID := newID()
-	path := filepath.Join(w.audioDir, songID+".wav")
-	if err := os.WriteFile(path, data, 0o640); err != nil {
-		return err
+	path := filepath.Join(w.audioDir, songID+".m4a")
+	if err := audio.EncodeWAVToM4A(ctx, data, path); err != nil {
+		return fmt.Errorf("transcoding audio to m4a: %w", err)
 	}
 	return w.st.CreateSong(&store.Song{
 		ID: songID, JobID: j.ID, Lyrics: j.Lyrics, Caption: j.Caption,

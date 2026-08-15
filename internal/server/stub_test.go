@@ -13,10 +13,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sruckh/minmaxmusic3-web/internal/audio"
 	"github.com/sruckh/minmaxmusic3-web/internal/config"
 )
 
-const fakeWAVHeader = "RIFF....WAVEfmt " // enough bytes to be a recognizable file
+var testWAVBytes = audio.GenerateTestWAV(32000, 2, 3200)
 
 // stubUpstream serves canned LLM and RunPod responses and records calls.
 type stubUpstream struct {
@@ -79,7 +80,7 @@ func (u *stubUpstream) handler() http.Handler {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"id": r.PathValue("id"), "status": "COMPLETED",
 				"output": map[string]any{
-					"delivery": "base64", "audio_base64": base64.StdEncoding.EncodeToString([]byte(fakeWAVHeader)),
+					"delivery": "base64", "audio_base64": base64.StdEncoding.EncodeToString(testWAVBytes),
 					"duration": 30, "seed": 1, "engine": "diffusers",
 				},
 			})
