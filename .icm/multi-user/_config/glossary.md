@@ -13,4 +13,7 @@
 - **Public Songs**: Songs where `is_public = 1`, making them visible in the public library tab across all authenticated users.
 - **Public Toggle**: A UI toggle switch allowing the song owner or admin to change `is_public` between 0 and 1.
 - **`user_id`**: The unique identifier of a user record, used to scope song and job ownership.
-- **`session_token`**: High-entropy token stored in the `sessions` table and user cookie.
+- **`session_token`**: High-entropy 32-byte token. It exists only in the user's cookie; the `sessions` table stores its SHA-256 (`token_hash`) and nothing that can be replayed.
+- **`Access`**: The store's "who is asking" value (`UserID` + `Admin`). Every query that can read or destroy a tenant's data takes one, and the ownership test lives in the SQL. The zero value owns nothing, so a forgotten `Access` reads nothing rather than everything.
+- **`config:admin`**: The `user_id` carried by the static Infisical administrator's session. It has no `users` row, cannot collide with a generated hex id, and cannot be targeted by admin actions.
+- **`legacy`**: The `user_id` given to jobs and songs that existed before the multi-user migration. Deliberately not a `users` row, so nobody can log in as it; those songs stay private and appear in no personal library.

@@ -580,6 +580,15 @@ func collectSongs(rows *sql.Rows) ([]*Song, error) {
 // The two shapes are separate statements rather than one predicate because
 // SQLite will not use idx_songs_user_created through an OR, and the library
 // page must not degrade into a full table scan as the song count grows.
+//
+// The server has no caller for this today: Stage 05 split the library page
+// into PersonalSongs (never lifted by admin, so an administrator's "My Songs"
+// stays their own) and PublicSongs. It is kept rather than deleted because it
+// is the only Access-scoped catalogue read in the store — the shape an admin
+// catalogue view would need — and because its tests pin the two properties the
+// Access type exists for: AdminAccess lifts the ownership predicate, and the
+// zero Access reads nothing. Delete it only together with an equivalent
+// home for those two assertions.
 func (s *Store) Songs(limit, offset int, a Access) ([]*Song, error) {
 	limit, offset = clampPage(limit, offset)
 	q := `SELECT ` + songCols + ` FROM songs WHERE user_id = ?
