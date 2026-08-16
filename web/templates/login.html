@@ -15,6 +15,7 @@
     {{if .Notice}}<p class="notice" role="status">{{.Notice}}</p>{{end}}
 
     <form method="post" action="/login" class="auth-form">
+      {{if .Next}}<input type="hidden" name="next" value="{{.Next}}">{{end}}
       <label for="username">Username</label>
       <input id="username" name="username" type="text" autocomplete="username"
              value="{{.Username}}" required autofocus>

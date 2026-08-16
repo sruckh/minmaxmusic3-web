@@ -13,8 +13,11 @@ import (
 	"testing"
 	"time"
 
+	"strings"
+
 	"github.com/sruckh/minmaxmusic3-web/internal/audio"
 	"github.com/sruckh/minmaxmusic3-web/internal/config"
+	"github.com/sruckh/minmaxmusic3-web/internal/store"
 )
 
 var testWAVBytes = audio.GenerateTestWAV(32000, 2, 3200)
@@ -91,11 +94,52 @@ func (u *stubUpstream) handler() http.Handler {
 	return mux
 }
 
-// newTestEnv boots a Server wired to stub upstreams, with the worker
-// running, and returns its handler and the stubs.
+// newTestEnv boots a Server wired to stub upstreams, with the worker running,
+// and returns a handler that signs every request in as an ordinary approved
+// user, plus the stubs.
+//
+// Stage 03 made a session a precondition for reaching any feature handler.
+// These tests exercise feature behaviour, not access control, so the harness
+// supplies the session and their assertions are unchanged. Access control
+// itself is tested in access_test.go against the unwrapped handler from
+// newTestEnvWith.
 func newTestEnv(t *testing.T) (http.Handler, *stubUpstream) {
-	h, up, _ := newTestEnvWith(t, nil)
-	return h, up
+	h, up, s := newTestEnvWith(t, nil)
+	return signedIn(t, h, s), up
+}
+
+// signedIn wraps a handler so every request that does not already carry a
+// session cookie gets an approved user's.
+func signedIn(t *testing.T, h http.Handler, s *Server) http.Handler {
+	t.Helper()
+	u := &store.User{
+		ID: newUserID(), Username: "harness-user",
+		// A syntactically valid bcrypt hash that matches no password: the
+		// harness signs in by minting a session, never by logging in, so no
+		// bcrypt work is done here.
+		PasswordHash: "$2a$04$" + strings.Repeat("x", 53),
+		Status:       store.StatusApproved, Role: store.RoleUser,
+	}
+	if err := s.st.CreateUser(u); err != nil {
+		t.Fatal(err)
+	}
+	token, err := store.NewSessionToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := s.st.CreateSession(token, &store.Session{
+		UserID: u.ID, Username: u.Username,
+		CreatedAt: now, ExpiresAt: now.Add(24 * time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, err := r.Cookie(sessionCookie); err != nil {
+			r.AddCookie(&http.Cookie{Name: sessionCookie, Value: token})
+		}
+		h.ServeHTTP(w, r)
+	})
 }
 
 // newTestEnvWith is newTestEnv plus a hook to adjust the config before the

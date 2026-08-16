@@ -62,22 +62,50 @@ const (
 	noticeDisabled   = "This account has been disabled. Contact an administrator."
 	noticeRegistered = "Registration received. An administrator must approve your account before you can sign in."
 	noticeSignedOut  = "You have been signed out."
+	noticeSignIn     = "Please sign in to continue."
 )
+
+// Notice keys are what travels in the URL; the text above never does.
+const (
+	noticeKeySignIn     = "signin"
+	noticeKeyPending    = "pending"
+	noticeKeyDisabled   = "disabled"
+	noticeKeyRegistered = "registered"
+	noticeKeySignedOut  = "signed-out"
+)
+
+// noticeFor maps a URL key to its message. An unknown key yields no notice,
+// so nothing a caller supplies is ever rendered.
+func noticeFor(key string) string {
+	switch key {
+	case noticeKeyRegistered:
+		return noticeRegistered
+	case noticeKeySignedOut:
+		return noticeSignedOut
+	case noticeKeySignIn:
+		return noticeSignIn
+	case noticeKeyPending:
+		return noticePending
+	case noticeKeyDisabled:
+		return noticeDisabled
+	}
+	return ""
+}
 
 // invalidCredentials is the single answer to every failed credential check:
 // unknown username and wrong password are indistinguishable in status, body,
 // and — thanks to the decoy comparison below — in time.
 const invalidCredentials = noticeInvalid
 
-func (s *Server) registerAuth(mux *http.ServeMux) {
+func (s *Server) registerAuth(rt *router) {
 	s.loginLimiter = newLimiter(loginLimitPerWindow, loginWindow)
 	s.registerLimiter = newLimiter(registerLimitPerWindow, registerWindow)
 
-	mux.HandleFunc("GET /login", s.handleLoginForm)
-	mux.HandleFunc("POST /login", s.handleLogin)
-	mux.HandleFunc("GET /register", s.handleRegisterForm)
-	mux.HandleFunc("POST /register", s.handleRegister)
-	mux.HandleFunc("POST /logout", s.handleLogout)
+	rt.handleFunc("GET /login", s.handleLoginForm)
+	rt.handleFunc("POST /login", s.handleLogin)
+	rt.handleFunc("GET /register", s.handleRegisterForm)
+	rt.handleFunc("POST /register", s.handleRegister)
+	rt.handleFunc("POST /logout", s.handleLogout)
 }
 
 // ProductionBcryptCost is the work factor this application ships with; the
@@ -178,9 +206,13 @@ func sessionToken(r *http.Request) string {
 	return c.Value
 }
 
-func (s *Server) renderLogin(w http.ResponseWriter, code int, notice, username string) {
+// renderLogin renders the sign-in page. next is echoed into a hidden field so
+// the return path survives the POST; it is re-sanitised on the way out as well
+// as on the way in, because the form is attacker-supplied on submit.
+func (s *Server) renderLogin(w http.ResponseWriter, code int, notice, username, next string) {
 	s.executeStatus(w, code, "login.html", map[string]any{
 		"Page": "login", "Notice": notice, "Username": username,
+		"Next": safeNext(next),
 	})
 }
 
@@ -191,14 +223,8 @@ func (s *Server) renderRegister(w http.ResponseWriter, code int, notice, usernam
 }
 
 func (s *Server) handleLoginForm(w http.ResponseWriter, r *http.Request) {
-	var notice string
-	switch r.URL.Query().Get("notice") {
-	case "registered":
-		notice = noticeRegistered
-	case "signed-out":
-		notice = noticeSignedOut
-	}
-	s.renderLogin(w, http.StatusOK, notice, "")
+	s.renderLogin(w, http.StatusOK,
+		noticeFor(r.URL.Query().Get("notice")), "", r.URL.Query().Get("next"))
 }
 
 func (s *Server) handleRegisterForm(w http.ResponseWriter, r *http.Request) {
@@ -255,7 +281,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.log.Info("user registered", "username", username, "status", store.StatusPending)
-	http.Redirect(w, r, "/login?notice=registered", http.StatusSeeOther)
+	http.Redirect(w, r, "/login?notice="+noticeKeyRegistered, http.StatusSeeOther)
 }
 
 // validateCredentials returns "" when the pair is acceptable, else the message
@@ -291,14 +317,20 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := r.ParseForm(); err != nil {
-		s.renderLogin(w, http.StatusBadRequest, invalidCredentials, "")
+		s.renderLogin(w, http.StatusBadRequest, invalidCredentials, "", "")
 		return
+	}
+	// The return path is attacker-controlled on submit, so it is sanitised
+	// here and again wherever it is rendered or emitted.
+	next := safeNext(r.FormValue("next"))
+	if next == "" {
+		next = safeNext(r.URL.Query().Get("next"))
 	}
 	username := strings.TrimSpace(r.FormValue("username"))
 	password := r.FormValue("password")
 	if username == "" || password == "" || len(password) > maxPasswordLen {
 		burnPasswordCheck()
-		s.renderLogin(w, http.StatusUnauthorized, invalidCredentials, username)
+		s.renderLogin(w, http.StatusUnauthorized, invalidCredentials, username, next)
 		return
 	}
 
@@ -311,7 +343,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		if u, err = s.st.GetUserByUsername(username); err != nil {
 			s.log.Error("login lookup", "err", err)
 			s.renderLogin(w, http.StatusInternalServerError,
-				"Could not sign you in — try again.", username)
+				"Could not sign you in — try again.", username, next)
 			return
 		}
 	}
@@ -330,7 +362,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	if !ok {
 		s.log.Warn("login failed", "ip", clientIP(r)) // never the credentials
-		s.renderLogin(w, http.StatusUnauthorized, invalidCredentials, username)
+		s.renderLogin(w, http.StatusUnauthorized, invalidCredentials, username, next)
 		return
 	}
 
@@ -340,14 +372,14 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		switch u.Status {
 		case store.StatusApproved:
 		case store.StatusPending:
-			s.renderLogin(w, http.StatusForbidden, noticePending, username)
+			s.renderLogin(w, http.StatusForbidden, noticePending, username, next)
 			return
 		case store.StatusDisabled:
-			s.renderLogin(w, http.StatusForbidden, noticeDisabled, username)
+			s.renderLogin(w, http.StatusForbidden, noticeDisabled, username, next)
 			return
 		default:
 			s.log.Error("unknown user status", "status", u.Status)
-			s.renderLogin(w, http.StatusForbidden, noticeDisabled, username)
+			s.renderLogin(w, http.StatusForbidden, noticeDisabled, username, next)
 			return
 		}
 		userID, displayName = u.ID, u.Username
@@ -356,11 +388,15 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if err := s.startSession(w, r, userID, displayName, adminAttempt); err != nil {
 		s.log.Error("starting session", "err", err)
 		s.renderLogin(w, http.StatusInternalServerError,
-			"Could not sign you in — try again.", username)
+			"Could not sign you in — try again.", username, next)
 		return
 	}
 	s.log.Info("login", "username", displayName, "config_admin", adminAttempt)
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+	dest := next
+	if dest == "" {
+		dest = "/"
+	}
+	http.Redirect(w, r, dest, http.StatusSeeOther)
 }
 
 // startSession issues a brand-new session and destroys whatever the client
@@ -401,7 +437,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.clearSessionCookie(w, r)
-	http.Redirect(w, r, "/login?notice=signed-out", http.StatusSeeOther)
+	http.Redirect(w, r, "/login?notice="+noticeKeySignedOut, http.StatusSeeOther)
 }
 
 // authAllowed throttles a credential endpoint per IP. It answers with the
@@ -413,6 +449,6 @@ func (s *Server) authAllowed(w http.ResponseWriter, r *http.Request, l *limiter,
 	s.log.Warn("rate limited", "what", what, "ip", clientIP(r))
 	w.Header().Set("Retry-After", "900")
 	s.renderLogin(w, http.StatusTooManyRequests,
-		"Too many attempts. Wait a few minutes and try again.", "")
+		"Too many attempts. Wait a few minutes and try again.", "", r.URL.Query().Get("next"))
 	return false
 }

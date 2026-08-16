@@ -474,6 +474,23 @@ func (s *Store) Song(id string, a Access) (*Song, error) {
 	return &g, nil
 }
 
+// PublicSong returns a song only if it has been explicitly shared. It is the
+// one song read that is not ownership-scoped, so the is_public test is the
+// entire authorisation check and it lives in the SQL rather than in a caller
+// that might forget it.
+func (s *Store) PublicSong(id string) (*Song, error) {
+	var g Song
+	err := scanSong(s.db.QueryRow(`SELECT `+songCols+`
+		FROM songs WHERE id = ? AND is_public = 1`, id), &g)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &g, nil
+}
+
 // SongForJob returns the (unique) song produced by a job, or nil.
 func (s *Store) SongForJob(jobID string) (*Song, error) {
 	var g Song
