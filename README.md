@@ -74,7 +74,7 @@ The application is **multi-user and closed by default**: every route except sign
 1. **User Request**: User enters a song concept into the AI assistant or fills in the generation form.
 2. **AI Assistant (`POST /assistant`)**: Proxies to OmniRoute / LLM gateway with thinking disabled (`thinking: disabled`).
 3. **Job Queue (`POST /jobs`)**: Validates input and stores a queued job in SQLite (`/data/mm3.db`).
-4. **Background Worker**: Dequeues jobs, sends inference requests to RunPod GPU (`POST /runsync`), transcodes audio to stereo 192 kbps M4A (`/data/audio/`), and updates the database.
+4. **Background Worker**: Dequeues jobs, submits inference requests to RunPod GPU asynchronously (`POST /run`), polls status (`GET /status/{id}`), transcodes the returned audio to stereo 192 kbps M4A (`/data/audio/`), and updates the database.
 5. **htmx Polling**: Browser polls `GET /jobs/{id}` and updates the player once generation is complete.
 
 ---
@@ -226,7 +226,7 @@ Values marked *(Infisical)* have no default. They are stored in the Infisical pr
 | Environment Variable | Default Value | Description |
 |---|---|---|
 | `MM3_ADDR` | `:8080` | Server listen address. |
-| `MM3_PUBLIC_URL` | `https://mm3.gemneye.xyz` | Canonical external origin. Accepted as a same-origin source for state-changing requests behind the reverse proxy. |
+| `MM3_PUBLIC_URL` | `<your-public-url>` | Canonical external origin. Accepted as a same-origin source for state-changing requests behind the reverse proxy. |
 | `MM3_WEB_DIR` | `/app/web` | Directory containing web templates and static assets. |
 | `MM3_DB_PATH` | `/data/mm3.db` | SQLite database file path. |
 | `MM3_AUDIO_DIR` | `/data/audio` | Output directory for audio M4A files. |

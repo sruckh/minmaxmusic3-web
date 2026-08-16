@@ -11,7 +11,9 @@ files link here rather than re-defining it.
 - **audio_duration** — requested song length in seconds; upper bound, max 300.
 - **seed** — integer for reproducible generation.
 - **RunPod worker** — the serverless inference backend
-  (github.com/sruckh/minmaxmusic3-serverless); called via `POST /runsync`.
+  (github.com/sruckh/minmaxmusic3-serverless); called async via `POST /run`,
+  polled via `GET /status/{id}` (`POST /runsync` is the blocking smoke-test
+  variant — never in the request path).
 - **delivery** — how audio returns: `s3` (presigned URL) or inline `base64`.
 - **AI assistant** — in-app LLM helper (Infisical `LLM_*` vars) that drafts
   lyrics + caption from a rough idea; see

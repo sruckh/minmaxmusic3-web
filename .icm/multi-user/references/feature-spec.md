@@ -30,7 +30,7 @@
   - Actions:
     - `POST /admin/users/{id}/approve`: Sets status to `approved`.
     - `POST /admin/users/{id}/disable`: Sets status to `disabled`.
-    - `POST /admin/users/{id}/delete`: Deletes user record and cascades/reassigns songs.
+    - `POST /admin/users/{id}/delete`: Deletes the user record and destroys its sessions, jobs, and songs (audio files unlinked after the transaction commits). Songs are destroyed, never reassigned.
 
 ## 3. Song Ownership & Public Sharing
 - **Ownership Scoping**:
