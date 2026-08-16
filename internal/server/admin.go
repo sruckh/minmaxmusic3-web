@@ -29,7 +29,7 @@ func adminNoticeFor(key string) string {
 	case adminNoticeApproved:
 		return "Account approved."
 	case adminNoticeDisabled:
-		return "Account disabled and signed out."
+		return "User disabled. Their active sessions have been ended."
 	case adminNoticeDeleted:
 		return "Account deleted, along with its songs."
 	case adminNoticeDeletedPart:

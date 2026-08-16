@@ -2,17 +2,17 @@
 <div style="display:inline-flex; gap:6px; align-items:center;">
   {{if ne .User.Status "approved"}}
   <button type="button" class="btn btn--ghost btn--sm"
-          hx-post="/admin/users/{{.User.ID}}/approve">Approve</button>
+          hx-post="/admin/users/{{.User.ID}}/approve">Approve User</button>
   {{end}}
   {{if ne .User.ID .Self}}
     {{if ne .User.Status "disabled"}}
     <button type="button" class="btn btn--ghost btn--sm"
             hx-post="/admin/users/{{.User.ID}}/disable"
-            hx-confirm="Disable {{.User.Username}}? They will be signed out immediately.">Disable</button>
+            hx-confirm="Disable user '{{.User.Username}}'? They will be logged out immediately.">Disable User</button>
     {{end}}
     <button type="button" class="btn btn--ghost btn--sm btn--danger"
             hx-post="/admin/users/{{.User.ID}}/delete"
-            hx-confirm="Permanently delete {{.User.Username}}, along with all of their songs and audio? This cannot be undone.">Delete</button>
+            hx-confirm="Are you sure you want to delete user '{{.User.Username}}'? This will permanently remove their account and private song history.">Delete User</button>
   {{end}}
 </div>
 {{end}}

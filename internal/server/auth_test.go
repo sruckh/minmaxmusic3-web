@@ -102,7 +102,7 @@ func TestLoginAndRegisterPagesRender(t *testing.T) {
 	}
 	// The registered notice is keyed, not reflected from the query string.
 	res := get(h, "/login?notice=registered")
-	if !strings.Contains(res.Body.String(), "administrator must approve") {
+	if !strings.Contains(res.Body.String(), noticeRegistered) {
 		t.Errorf("registered notice missing: %s", res.Body.String())
 	}
 }
@@ -310,8 +310,8 @@ func TestPendingAndDisabledRejected(t *testing.T) {
 	disabled := mkUser(t, s, "disabled-user", fxUserPass, store.StatusDisabled)
 
 	for _, c := range []struct{ user, wantIn string }{
-		{pending.Username, "awaiting administrator approval"},
-		{disabled.Username, "has been disabled"},
+		{pending.Username, noticePending},
+		{disabled.Username, noticeDisabled},
 	} {
 		res := login(t, h, c.user, fxUserPass)
 		if res.Code != http.StatusForbidden {
@@ -370,7 +370,7 @@ func TestLoginFailuresAreIndistinguishable(t *testing.T) {
 		t.Errorf("response bodies differ between wrong-password and unknown-user")
 	}
 	for _, res := range []*httptest.ResponseRecorder{wrongPass, noSuchUser} {
-		if !strings.Contains(res.Body.String(), "Incorrect username or password") {
+		if !strings.Contains(res.Body.String(), invalidCredentials) {
 			t.Errorf("failure body is not the uniform message")
 		}
 	}
@@ -423,7 +423,7 @@ func TestAdminLoginBurnsSameWork(t *testing.T) {
 	if res.Code != http.StatusUnauthorized {
 		t.Fatalf("wrong admin password = %d, want 401", res.Code)
 	}
-	if !strings.Contains(res.Body.String(), "Incorrect username or password") {
+	if !strings.Contains(res.Body.String(), invalidCredentials) {
 		t.Error("admin failure does not use the uniform message")
 	}
 }

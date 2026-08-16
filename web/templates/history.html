@@ -13,14 +13,14 @@
     </div>
 
     <section class="library-section">
-      <h2 class="library-heading">{{.Personal.Heading}}</h2>
+      <h2 class="library-heading" id="my-songs">{{.Personal.Heading}}</h2>
+      <p class="library-note">Your private music generations and creations.</p>
       {{template "songs-section.html" .Personal}}
     </section>
 
     <section class="library-section">
-      <h2 class="library-heading">{{.Public.Heading}}</h2>
-      <p class="library-note">Songs other people have chosen to share. Yours appear
-        here only after you share them.</p>
+      <h2 class="library-heading" id="community-songs">{{.Public.Heading}}</h2>
+      <p class="library-note">Public songs shared across all members.</p>
       {{template "songs-section.html" .Public}}
     </section>
   </main>

@@ -15,12 +15,13 @@
     {{if .Notice}}<p class="notice" role="status">{{.Notice}}</p>{{end}}
 
     <section class="library-section">
-      <h2 class="library-heading">Pending requests{{if .Pending}} ({{len .Pending}}){{end}}</h2>
+      <h2 class="library-heading" id="pending-heading">Pending Registration Requests</h2>
+      <p class="library-note">Accounts waiting for approval before they can log in.</p>
       {{if not .Pending}}
       <div class="empty-state"><p>No accounts are waiting for approval.</p></div>
       {{else}}
-      <table class="table">
-        <thead><tr><th>Username</th><th>Requested</th><th></th></tr></thead>
+      <table class="table" aria-labelledby="pending-heading">
+        <thead><tr><th scope="col">Username</th><th scope="col">Requested</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead>
         <tbody>
           {{range .Pending}}
           <tr>
@@ -37,12 +38,13 @@
     </section>
 
     <section class="library-section">
-      <h2 class="library-heading">All accounts</h2>
+      <h2 class="library-heading" id="accounts-heading">All Accounts</h2>
+      <p class="library-note">Every registered account, with its current status and role.</p>
       {{if not .Users}}
       <div class="empty-state"><p>No other accounts yet.</p></div>
       {{else}}
-      <table class="table">
-        <thead><tr><th>Username</th><th>Status</th><th>Role</th><th>Created</th><th>Updated</th><th></th></tr></thead>
+      <table class="table" aria-labelledby="accounts-heading">
+        <thead><tr><th scope="col">Username</th><th scope="col">Status</th><th scope="col">Role</th><th scope="col">Created</th><th scope="col">Updated</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead>
         <tbody>
           {{range .Users}}
           <tr>
