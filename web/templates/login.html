@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>{{template "head" .}}</head>
+<body>
+<div class="shell">
+  {{template "nav" .}}
+  <main class="session">
+    <div class="session-head">
+      <div style="display:flex; align-items:center; gap:12px;">
+        <span class="eyebrow"><span class="dot" style="background:var(--green)"></span>ACCESS</span>
+        <h1 style="font-family:var(--font-display); font-size:1.2rem; font-weight:500; margin:0">Sign in</h1>
+      </div>
+    </div>
+
+    {{if .Notice}}<p class="notice" role="status">{{.Notice}}</p>{{end}}
+
+    <form method="post" action="/login" class="auth-form">
+      <label for="username">Username</label>
+      <input id="username" name="username" type="text" autocomplete="username"
+             value="{{.Username}}" required autofocus>
+
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password"
+             autocomplete="current-password" required>
+
+      <button class="btn" type="submit">Sign in</button>
+    </form>
+
+    <p class="footer-note">
+      No account yet? <a href="/register">Request access</a> — an administrator
+      approves new accounts before first sign-in.
+    </p>
+  </main>
+
+  <p class="footer-note">MM3 — local session, nothing leaves your browser</p>
+</div>
+</body>
+</html>

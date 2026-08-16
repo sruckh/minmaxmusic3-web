@@ -28,6 +28,20 @@ type Config struct {
 	LLMModelID         string
 	LLMThinking        string
 	LLMReasoningEffort string
+
+	// AdminUser and AdminPassword are the static administrator credentials,
+	// injected by Infisical. They never touch the database and never have a
+	// default — see AdminLoginEnabled.
+	AdminUser     string
+	AdminPassword string
+}
+
+// AdminLoginEnabled reports whether the static administrator can sign in.
+// Both halves must be present: a blank half disables admin login outright
+// rather than falling back to a default credential, so a misconfigured deploy
+// has no administrator instead of a guessable one.
+func (c *Config) AdminLoginEnabled() bool {
+	return c.AdminUser != "" && c.AdminPassword != ""
 }
 
 func env(key, def string) string {
@@ -41,12 +55,12 @@ func env(key, def string) string {
 // not (see package comment).
 func Load() (*Config, error) {
 	c := &Config{
-		Addr:           env("MM3_ADDR", ":8080"),
-		PublicURL:      env("MM3_PUBLIC_URL", "https://mm3.gemneye.xyz"),
-		WebDir:         env("MM3_WEB_DIR", "/app/web"), // absolute: no CWD dependence
-		DBPath:         env("MM3_DB_PATH", "/data/mm3.db"),
-		AudioDir:       env("MM3_AUDIO_DIR", "/data/audio"),
-		MaxInFlight:    2,
+		Addr:               env("MM3_ADDR", ":8080"),
+		PublicURL:          env("MM3_PUBLIC_URL", "https://mm3.gemneye.xyz"),
+		WebDir:             env("MM3_WEB_DIR", "/app/web"), // absolute: no CWD dependence
+		DBPath:             env("MM3_DB_PATH", "/data/mm3.db"),
+		AudioDir:           env("MM3_AUDIO_DIR", "/data/audio"),
+		MaxInFlight:        2,
 		RunPodEndpoint:     os.Getenv("RUNPOD_ENDPOINT"),
 		RunPodAPIKey:       os.Getenv("RUNPOD_API_KEY"),
 		LLMBaseURL:         os.Getenv("LLM_BASE_URL"),
@@ -54,6 +68,8 @@ func Load() (*Config, error) {
 		LLMModelID:         os.Getenv("LLM_MODEL_ID"),
 		LLMThinking:        env("LLM_THINKING", "disabled"),
 		LLMReasoningEffort: env("LLM_REASONING_EFFORT", "none"),
+		AdminUser:          os.Getenv("ADMIN_USER"),
+		AdminPassword:      os.Getenv("ADMIN_PASSWORD"),
 	}
 	if v := os.Getenv("MM3_MAX_IN_FLIGHT"); v != "" {
 		n, err := strconv.Atoi(v)
@@ -76,11 +92,12 @@ func Load() (*Config, error) {
 // Summary returns a loggable one-line status: values for non-secrets,
 // presence flags for secrets.
 func (c *Config) Summary() string {
-	return fmt.Sprintf("addr=%s web=%s db=%s audio=%s in_flight=%d runpod_endpoint=%s runpod_key=%t llm_base=%s llm_model=%s llm_key=%t llm_thinking=%s llm_reasoning_effort=%s",
+	return fmt.Sprintf("addr=%s web=%s db=%s audio=%s in_flight=%d runpod_endpoint=%s runpod_key=%t llm_base=%s llm_model=%s llm_key=%t llm_thinking=%s llm_reasoning_effort=%s admin_user=%s admin_password=%t admin_login=%t",
 		c.Addr, c.WebDir, c.DBPath, c.AudioDir, c.MaxInFlight,
 		present(c.RunPodEndpoint), c.RunPodAPIKey != "",
 		present(c.LLMBaseURL), present(c.LLMModelID), c.LLMAPIKey != "",
 		c.LLMThinking, c.LLMReasoningEffort,
+		present(c.AdminUser), c.AdminPassword != "", c.AdminLoginEnabled(),
 	)
 }
 
