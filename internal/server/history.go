@@ -233,7 +233,7 @@ func (s *Server) handleToggleSongPublic(w http.ResponseWriter, r *http.Request) 
 	}
 	s.log.Info("song sharing changed", "id", g.ID, "public", g.IsPublic)
 
-	if r.Header.Get("HX-Request") == "true" {
+	if isHTMX(r) {
 		s.execute(w, "share-toggle.html", map[string]any{"Song": g, "CanEdit": true})
 		return
 	}
@@ -302,7 +302,7 @@ func (s *Server) handleDeleteSong(w http.ResponseWriter, r *http.Request) {
 	if target == "" && strings.Contains(r.Header.Get("HX-Current-URL"), "/songs/") {
 		target = "/history"
 	}
-	if r.Header.Get("HX-Request") == "true" {
+	if isHTMX(r) {
 		if target != "" {
 			w.Header().Set("HX-Redirect", target)
 		}

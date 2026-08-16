@@ -19,3 +19,24 @@ until docker exec mm3-app test -r /run/secrets/infisical_client_secret 2>/dev/nu
 	sleep 1
 done
 echo "up.sh: stack running; client secret mounted read-only (source in tmpfs, RAM only)" >&2
+
+# Administrator credentials are the one omission the health check cannot
+# catch: without ADMIN_USER and ADMIN_PASSWORD the app starts, serves, and
+# reports healthy with no administrator, so no registration can ever be
+# approved. Say so here rather than leaving it to be discovered later. Only
+# the presence flag is ever read — no value is printed.
+i=0
+until docker logs mm3-app 2>&1 | grep -q 'msg="config loaded"'; do
+	i=$((i + 1))
+	[ "$i" -ge 30 ] && { echo "up.sh: app has not logged its config after 30s" >&2; break; }
+	sleep 1
+done
+if docker logs mm3-app 2>&1 | grep -q 'admin_login=true'; then
+	echo "up.sh: administrator sign-in enabled (admin_login=true)" >&2
+else
+	echo "up.sh: WARNING — administrator sign-in is DISABLED." >&2
+	echo "up.sh:   ADMIN_USER and ADMIN_PASSWORD must both be set in Infisical" >&2
+	echo "up.sh:   (project mini-max-music3-z96r, env ${INFISICAL_ENV:-dev})." >&2
+	echo "up.sh:   Until they are, nobody can approve a registration." >&2
+	echo "up.sh:   See README.md § Authentication & Administration." >&2
+fi

@@ -20,10 +20,26 @@ services:
       MM3_MAX_IN_FLIGHT: ${MM3_MAX_IN_FLIGHT:-2}
       # Universal Auth machine identity — the entrypoint trades these for a
       # short-lived token and runs the app under `infisical run`, which puts
-      # the LLM_*/RUNPOD_* secrets straight into the app's environment.
-      # Export them into your shell before `docker compose up`
-      # (see scripts/env.sh); never commit them. App secrets themselves are
-      # NOT listed here — they arrive only via infisical run.
+      # the app secrets straight into the app's environment. Export them into
+      # your shell before `docker compose up` (see scripts/env.sh); never
+      # commit them. App secrets themselves are NOT listed here — they arrive
+      # only via infisical run, and the full set is:
+      #
+      #   LLM_BASE_URL, LLM_API_KEY, LLM_MODEL_ID   — assistant
+      #   RUNPOD_ENDPOINT, RUNPOD_API_KEY           — inference
+      #   ADMIN_USER, ADMIN_PASSWORD                — administrator sign-in
+      #
+      # ADMIN_USER and ADMIN_PASSWORD are the dangerous omission. Missing
+      # RUNPOD_*/LLM_* fails loudly the first time someone generates; missing
+      # admin credentials fails silently — the container passes its health
+      # check, accepts registrations, and has NO administrator, so no account
+      # can ever be approved. There is no default and no bootstrap flag; the
+      # only fix is to set both in Infisical and restart. After every deploy,
+      # confirm `admin_login=true` in the `config loaded` log line:
+      #
+      #   docker logs mm3-app --tail 20 | grep admin_login
+      #
+      # See README.md § Authentication & Administration.
       INFISICAL_DOMAIN: ${INFISICAL_HOST:-}
       INFISICAL_PROJECT_ID: ${INFISICAL_PROJECT_ID:-}
       INFISICAL_ENV: ${INFISICAL_ENV:-dev}

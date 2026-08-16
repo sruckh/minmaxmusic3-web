@@ -191,9 +191,12 @@ func (s *Server) renderJobDone(w http.ResponseWriter, j *store.Job, g *store.Son
 	s.execute(w, "job.html", map[string]any{"Job": j, "Song": g, "Done": true})
 }
 
+// renderJobError renders the failure fragment at the given status. It goes
+// through executeStatus like every other status-carrying render: writing the
+// header here and then calling execute would send the status twice and drop
+// the Content-Type that execute sets afterwards.
 func (s *Server) renderJobError(w http.ResponseWriter, code int, msg string) {
-	w.WriteHeader(code)
-	s.execute(w, "job-error.html", map[string]any{"Message": msg})
+	s.executeStatus(w, code, "job-error.html", map[string]any{"Message": msg})
 }
 
 func (s *Server) songForJob(jobID string) (*store.Song, error) {

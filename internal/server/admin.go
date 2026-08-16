@@ -157,7 +157,7 @@ func (s *Server) adminRedirect(w http.ResponseWriter, r *http.Request, noticeKey
 	if noticeKey != "" {
 		dest += "?notice=" + urlQueryEscape(noticeKey)
 	}
-	if r.Header.Get("HX-Request") == "true" {
+	if isHTMX(r) {
 		w.Header().Set("HX-Redirect", dest)
 		w.WriteHeader(http.StatusOK)
 		return
