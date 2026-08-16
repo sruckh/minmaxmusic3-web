@@ -307,11 +307,12 @@ func TestAdminRoutesRequireAdmin(t *testing.T) {
 		if res.Code != http.StatusForbidden {
 			t.Errorf("ordinary user %s = %d, want 403", path, res.Code)
 		}
-		// Admin: clears the middleware. No handler is registered yet, so the
-		// mux answers 404 — which is exactly the proof that the refusal above
-		// came from access control and not from a missing route.
-		if res := do(h, "GET", path, cookieFor(adminTok)); res.Code != http.StatusNotFound {
-			t.Errorf("admin %s = %d, want 404 (past the middleware)", path, res.Code)
+		// Admin: clears the middleware. Stage 06 registered handlers here, so
+		// the proof is no longer a 404 — it is that an administrator is not
+		// refused, while the identical request above was. Any non-refusal
+		// status means access control let them through.
+		if res := do(h, "GET", path, cookieFor(adminTok)); denied(res) {
+			t.Errorf("admin %s was refused: %d", path, res.Code)
 		}
 	}
 }

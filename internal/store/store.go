@@ -46,6 +46,9 @@ const LegacyUserID = "legacy"
 var (
 	ErrTransition    = errors.New("store: state transition rejected")
 	ErrUsernameTaken = errors.New("store: username already taken")
+	// ErrLastAdmin refuses an operation that would leave the database with no
+	// approved administrator.
+	ErrLastAdmin = errors.New("store: refusing to remove the last administrator")
 )
 
 // Access is who is asking. Every query that can read or destroy a tenant's
@@ -750,6 +753,13 @@ func (s *Store) UpdateUserStatus(id, status string) error {
 	}
 	defer tx.Rollback()
 
+	// Moving an administrator off approved is a removal for this purpose.
+	if status != StatusApproved {
+		if err := guardLastAdmin(tx, id); err != nil {
+			return err
+		}
+	}
+
 	res, err := tx.Exec(`UPDATE users SET status = ?, updated_at = ? WHERE id = ?`,
 		status, time.Now().UTC(), id)
 	if err != nil {
@@ -766,27 +776,106 @@ func (s *Store) UpdateUserStatus(id, status string) error {
 	return tx.Commit()
 }
 
-// DeleteUser removes an account and its sessions together. Jobs and songs are
-// left in place — their user_id is retained so an admin can reassign or purge
-// them deliberately rather than losing audio to a cascade.
-func (s *Store) DeleteUser(id string) error {
+// guardLastAdmin returns ErrLastAdmin when removing the account, or moving it
+// off approved, would leave the database with no approved administrator.
+//
+// It must run inside the caller's transaction. Checking in one statement and
+// writing in another leaves a window where two concurrent removals each see
+// the other as the survivor and both succeed, stranding the system.
+//
+// An account that is not currently an approved administrator protects nothing,
+// so the guard passes immediately.
+func guardLastAdmin(tx *sql.Tx, id string) error {
+	var role, status string
+	err := tx.QueryRow(`SELECT role, status FROM users WHERE id = ?`, id).
+		Scan(&role, &status)
+	if err != nil {
+		return err // sql.ErrNoRows included: no such user
+	}
+	if role != RoleAdmin || status != StatusApproved {
+		return nil
+	}
+	var others int
+	if err := tx.QueryRow(
+		`SELECT COUNT(*) FROM users WHERE role = ? AND status = ? AND id <> ?`,
+		RoleAdmin, StatusApproved, id).Scan(&others); err != nil {
+		return err
+	}
+	if others == 0 {
+		return ErrLastAdmin
+	}
+	return nil
+}
+
+// DeleteUser removes an account and everything belonging to it — sessions,
+// jobs, and songs — in a single transaction, and returns the audio paths of
+// the deleted songs so the caller can unlink the files.
+//
+// Content is destroyed rather than reassigned. Reassigning a departed user's
+// private songs to a shared owner would quietly make them browsable by
+// administrators forever, which is a privacy regression dressed up as
+// preservation; leaving them owned by an id with no users row makes them
+// unreachable garbage. Deleting is the outcome that matches what was asked.
+//
+// The files are deliberately not touched here: a filesystem unlink cannot join
+// the transaction, so the database commits first and the caller unlinks after.
+// A file left behind is recoverable garbage; a row pointing at a file that is
+// already gone is not.
+//
+// Returns ErrLastAdmin rather than stranding the system, and sql.ErrNoRows if
+// there is no such user. Either way nothing is written.
+func (s *Store) DeleteUser(id string) ([]string, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer tx.Rollback()
 
+	if err := guardLastAdmin(tx, id); err != nil {
+		return nil, err
+	}
+
+	rows, err := tx.Query(`SELECT audio_path FROM songs WHERE user_id = ?`, id)
+	if err != nil {
+		return nil, err
+	}
+	var paths []string
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		if p != "" {
+			paths = append(paths, p)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close() // the single sqlite connection cannot Exec while this is open
+
+	for _, q := range []string{
+		`DELETE FROM songs WHERE user_id = ?`,
+		`DELETE FROM jobs WHERE user_id = ?`,
+		`DELETE FROM sessions WHERE user_id = ?`,
+	} {
+		if _, err := tx.Exec(q, id); err != nil {
+			return nil, err
+		}
+	}
 	res, err := tx.Exec(`DELETE FROM users WHERE id = ?`, id)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
-		return sql.ErrNoRows
+		return nil, sql.ErrNoRows
 	}
-	if _, err := tx.Exec(`DELETE FROM sessions WHERE user_id = ?`, id); err != nil {
-		return err
+	if err := tx.Commit(); err != nil {
+		return nil, err
 	}
-	return tx.Commit()
+	return paths, nil
 }
 
 // ListUsers returns every account, newest signup first.

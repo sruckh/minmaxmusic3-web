@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>{{template "head" .}}</head>
+<body>
+<div class="shell">
+  {{template "nav" .}}
+  <main class="session">
+    <div class="session-head">
+      <div style="display:flex; align-items:center; gap:12px;">
+        <span class="eyebrow"><span class="dot" style="background:var(--green)"></span>ADMINISTRATION</span>
+        <h1 style="font-family:var(--font-display); font-size:1.2rem; font-weight:500; margin:0">User accounts</h1>
+      </div>
+    </div>
+
+    {{if .Notice}}<p class="notice" role="status">{{.Notice}}</p>{{end}}
+
+    <section class="library-section">
+      <h2 class="library-heading">Pending requests{{if .Pending}} ({{len .Pending}}){{end}}</h2>
+      {{if not .Pending}}
+      <div class="empty-state"><p>No accounts are waiting for approval.</p></div>
+      {{else}}
+      <table class="table">
+        <thead><tr><th>Username</th><th>Requested</th><th></th></tr></thead>
+        <tbody>
+          {{range .Pending}}
+          <tr>
+            <td style="font-weight:600">{{.Username}}</td>
+            <td class="num">{{.CreatedAt.Format "Jan 2, 2006 15:04"}}</td>
+            <td style="text-align:right; white-space:nowrap">
+              {{template "admin-actions.html" dict "User" . "Self" $.Self}}
+            </td>
+          </tr>
+          {{end}}
+        </tbody>
+      </table>
+      {{end}}
+    </section>
+
+    <section class="library-section">
+      <h2 class="library-heading">All accounts</h2>
+      {{if not .Users}}
+      <div class="empty-state"><p>No other accounts yet.</p></div>
+      {{else}}
+      <table class="table">
+        <thead><tr><th>Username</th><th>Status</th><th>Role</th><th>Created</th><th>Updated</th><th></th></tr></thead>
+        <tbody>
+          {{range .Users}}
+          <tr>
+            <td style="font-weight:600">
+              {{.Username}}{{if eq .ID $.Self}} <span class="badge">you</span>{{end}}
+            </td>
+            <td>
+              {{if eq .Status "approved"}}<span class="badge badge--done"><span class="dot"></span>approved</span>
+              {{else if eq .Status "disabled"}}<span class="badge badge--failed"><span class="dot"></span>disabled</span>
+              {{else}}<span class="badge">{{.Status}}</span>{{end}}
+            </td>
+            <td><span class="badge">{{.Role}}</span></td>
+            <td class="num">{{.CreatedAt.Format "Jan 2, 2006 15:04"}}</td>
+            <td class="num">{{.UpdatedAt.Format "Jan 2, 2006 15:04"}}</td>
+            <td style="text-align:right; white-space:nowrap">
+              {{template "admin-actions.html" dict "User" . "Self" $.Self}}
+            </td>
+          </tr>
+          {{end}}
+        </tbody>
+      </table>
+      {{end}}
+    </section>
+  </main>
+
+  <p class="footer-note">MM3 — local session, nothing leaves your browser</p>
+</div>
+</body>
+</html>
