@@ -16,31 +16,158 @@ import (
 
 const pageSize = 20
 
-// handleHistory renders the library, newest first, with pagination links.
-func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
-	page := 1
-	if v := r.URL.Query().Get("page"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n >= 1 {
-			page = n
-		}
+// maxPage bounds deep paging. The offset reaches SQL, so an unbounded page
+// number is a way to make the database walk the whole table on demand.
+const maxPage = 10000
+
+// pageParam reads a 1-based page number and clamps it. Anything unparseable,
+// zero, negative, or absurd becomes a valid page rather than being trusted —
+// a non-numeric value must not silently become an offset of 0 in a way the
+// caller can steer.
+func pageParam(r *http.Request, key string) int {
+	v := strings.TrimSpace(r.URL.Query().Get(key))
+	if v == "" {
+		return 1
 	}
-	// Fetch one extra row so HasNext is exact — no phantom "Older" link on
-	// a boundary page.
-	songs, err := s.st.Songs(pageSize+1, (page-1)*pageSize, s.caller(r))
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 1 {
+		return 1
+	}
+	if n > maxPage {
+		return maxPage
+	}
+	return n
+}
+
+// songCard is one row as the templates see it. CanEdit is per song because
+// the community section mixes other people's songs with the viewer's own.
+type songCard struct {
+	*store.Song
+	CanEdit bool
+}
+
+// songSection is one half of the partitioned library.
+type songSection struct {
+	Kind     string // "personal" | "public" — drives ids and the fragment URL
+	Heading  string
+	Songs    []songCard
+	Page     int
+	PrevPage int
+	NextPage int
+	HasPrev  bool
+	HasNext  bool
+	Empty    string
+	// ShowOwnerColumns is false for the community section, which deliberately
+	// renders less about each song than the owner's own view does.
+	ShowOwnerColumns bool
+}
+
+// Endpoint is the fragment URL this section pages against.
+func (sec songSection) Endpoint() string { return "/history/" + sec.Kind }
+
+// personalSection loads the caller's own songs.
+//
+// It reads the user id from the session rather than passing an Access, so an
+// administrator's "My Songs" is their own library and not every song in the
+// system. An admin who wants the whole catalogue has the admin dashboard.
+func (s *Server) personalSection(r *http.Request, page int) (songSection, error) {
+	uc, _ := userFrom(r.Context())
+	if uc == nil {
+		// Unreachable behind the middleware; fail closed rather than assume.
+		return songSection{}, errors.New("history: no user in context")
+	}
+	songs, err := s.st.PersonalSongs(uc.UserID, pageSize+1, (page-1)*pageSize)
 	if err != nil {
-		s.log.Error("history", "err", err)
-		http.Error(w, "Could not load the library.", http.StatusInternalServerError)
-		return
+		return songSection{}, err
 	}
+	sec := newSection("personal", "My Songs", page, songs,
+		"No songs in your library yet — describe a sound on the console and press Generate.")
+	sec.ShowOwnerColumns = true
+	for i := range sec.Songs {
+		sec.Songs[i].CanEdit = true // by construction: these are the caller's
+	}
+	return sec, nil
+}
+
+// publicSection loads every shared song, whoever owns it.
+func (s *Server) publicSection(r *http.Request, page int) (songSection, error) {
+	songs, err := s.st.PublicSongs(pageSize+1, (page-1)*pageSize)
+	if err != nil {
+		return songSection{}, err
+	}
+	sec := newSection("public", "Community Songs", page, songs,
+		"Nothing has been shared yet. Publish one of your own songs to start the community library.")
+	a := s.caller(r)
+	for i := range sec.Songs {
+		g := sec.Songs[i].Song
+		sec.Songs[i].CanEdit = a.Admin || (a.UserID != "" && a.UserID == g.UserID)
+	}
+	return sec, nil
+}
+
+// newSection trims the lookahead row and fills in the paging state. The query
+// asks for one row more than a page so HasNext is exact — no phantom "Older"
+// link on a boundary page, and no separate COUNT.
+func newSection(kind, heading string, page int, songs []*store.Song, empty string) songSection {
 	hasNext := len(songs) > pageSize
 	if hasNext {
 		songs = songs[:pageSize]
 	}
+	cards := make([]songCard, len(songs))
+	for i, g := range songs {
+		cards[i] = songCard{Song: g}
+	}
+	return songSection{
+		Kind: kind, Heading: heading, Songs: cards, Empty: empty,
+		Page: page, PrevPage: page - 1, NextPage: page + 1,
+		HasPrev: page > 1, HasNext: hasNext,
+	}
+}
+
+// handleHistory renders both halves of the partitioned library. Each section
+// pages independently via its own query parameter, and thereafter via its own
+// htmx fragment.
+func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
+	personal, err := s.personalSection(r, pageParam(r, "mine"))
+	if err != nil {
+		s.log.Error("history personal", "err", err)
+		http.Error(w, "Could not load the library.", http.StatusInternalServerError)
+		return
+	}
+	public, err := s.publicSection(r, pageParam(r, "public"))
+	if err != nil {
+		s.log.Error("history public", "err", err)
+		http.Error(w, "Could not load the library.", http.StatusInternalServerError)
+		return
+	}
 	s.execute(w, "history.html", map[string]any{
-		"Page": "history", "Songs": songs,
-		"PrevPage": page - 1, "NextPage": page + 1,
-		"HasPrev": page > 1, "HasNext": hasNext,
+		"Page": "history", "Personal": personal, "Public": public,
 	})
+}
+
+// handleHistoryPersonal is the htmx fragment for the caller's own songs. It is
+// a real route carrying the same authorisation as the page: it is not in the
+// public allowlist, so Stage 03's default-deny requires an approved session,
+// and the query itself is scoped to the session user.
+func (s *Server) handleHistoryPersonal(w http.ResponseWriter, r *http.Request) {
+	sec, err := s.personalSection(r, pageParam(r, "page"))
+	if err != nil {
+		s.log.Error("history personal", "err", err)
+		http.Error(w, "Could not load your songs.", http.StatusInternalServerError)
+		return
+	}
+	s.execute(w, "songs-section.html", sec)
+}
+
+// handleHistoryPublic is the htmx fragment for the community library.
+func (s *Server) handleHistoryPublic(w http.ResponseWriter, r *http.Request) {
+	sec, err := s.publicSection(r, pageParam(r, "page"))
+	if err != nil {
+		s.log.Error("history public", "err", err)
+		http.Error(w, "Could not load the community library.", http.StatusInternalServerError)
+		return
+	}
+	s.execute(w, "songs-section.html", sec)
 }
 
 // handleSongDetail renders one song with full lyrics + caption + player.

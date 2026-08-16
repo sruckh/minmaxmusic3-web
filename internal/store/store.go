@@ -504,11 +504,81 @@ func (s *Store) SongForJob(jobID string) (*Song, error) {
 	return &g, nil
 }
 
+// MaxPageSize bounds any paged read. limit and offset reach SQL, and an
+// unbounded limit is both a denial of service and a way to sweep the table in
+// one request, so the store clamps rather than trusting its caller.
+const MaxPageSize = 100
+
+// clampPage bounds a page window. A limit below one would return nothing and a
+// negative offset is a SQLite error, so both are corrected rather than passed
+// through.
+func clampPage(limit, offset int) (int, int) {
+	if limit < 1 {
+		limit = 1
+	}
+	if limit > MaxPageSize {
+		limit = MaxPageSize
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	return limit, offset
+}
+
+// PersonalSongs pages one owner's library, newest first.
+//
+// It takes a user id rather than an Access on purpose: "my songs" means the
+// caller's own songs even for an administrator, whose AdminAccess would
+// otherwise lift the predicate and turn their personal library into every
+// song in the system. There is no admin variant of this query.
+//
+// The predicate and ordering match idx_songs_user_created (user_id,
+// created_at DESC), so paging is an index range scan with no sort.
+func (s *Store) PersonalSongs(userID string, limit, offset int) ([]*Song, error) {
+	limit, offset = clampPage(limit, offset)
+	rows, err := s.db.Query(`SELECT `+songCols+`
+		FROM songs WHERE user_id = ?
+		ORDER BY created_at DESC LIMIT ? OFFSET ?`, userID, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	return collectSongs(rows)
+}
+
+// PublicSongs pages every explicitly shared song, newest first. Ownership does
+// not narrow it — that is what "shared" means — so it takes no Access.
+//
+// Matches idx_songs_public_created (is_public, created_at DESC).
+func (s *Store) PublicSongs(limit, offset int) ([]*Song, error) {
+	limit, offset = clampPage(limit, offset)
+	rows, err := s.db.Query(`SELECT `+songCols+`
+		FROM songs WHERE is_public = 1
+		ORDER BY created_at DESC LIMIT ? OFFSET ?`, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	return collectSongs(rows)
+}
+
+func collectSongs(rows *sql.Rows) ([]*Song, error) {
+	defer rows.Close()
+	var out []*Song
+	for rows.Next() {
+		var g Song
+		if err := scanSong(rows, &g); err != nil {
+			return nil, err
+		}
+		out = append(out, &g)
+	}
+	return out, rows.Err()
+}
+
 // Songs pages the caller's library newest-first; an admin sees every owner's.
 // The two shapes are separate statements rather than one predicate because
 // SQLite will not use idx_songs_user_created through an OR, and the library
 // page must not degrade into a full table scan as the song count grows.
 func (s *Store) Songs(limit, offset int, a Access) ([]*Song, error) {
+	limit, offset = clampPage(limit, offset)
 	q := `SELECT ` + songCols + ` FROM songs WHERE user_id = ?
 		ORDER BY created_at DESC LIMIT ? OFFSET ?`
 	args := []any{a.UserID, limit, offset}
@@ -521,16 +591,7 @@ func (s *Store) Songs(limit, offset int, a Access) ([]*Song, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	var out []*Song
-	for rows.Next() {
-		var g Song
-		if err := scanSong(rows, &g); err != nil {
-			return nil, err
-		}
-		out = append(out, &g)
-	}
-	return out, rows.Err()
+	return collectSongs(rows)
 }
 
 // DeleteSong removes a song the caller owns, together with its job, in a

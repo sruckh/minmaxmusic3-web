@@ -1117,3 +1117,128 @@ func TestSetSongPublicIsScopedAndIdempotent(t *testing.T) {
 		t.Fatalf("PublicSong on a private song = %#v, err=%v", g, err)
 	}
 }
+
+// TestPartitionedReadsAndClamping pins the two partition queries at the SQL
+// level: personal is one owner's rows and takes no admin lift, public is only
+// shared rows, and both clamp their window.
+func TestPartitionedReadsAndClamping(t *testing.T) {
+	s := openTemp(t)
+	now := time.Now().UTC()
+	mk := func(id, owner string, public bool, age time.Duration) {
+		t.Helper()
+		if err := s.CreateSong(&Song{ID: id, JobID: "j-" + id, UserID: owner,
+			IsPublic: public, Lyrics: "la", Caption: "pop", Duration: 30,
+			Engine: "stub", Delivery: "base64", AudioPath: "/tmp/" + id,
+			CreatedAt: now.Add(-age)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mk("a-new", "alice", false, 1*time.Second)
+	mk("a-mid", "alice", true, 2*time.Second)
+	mk("a-old", "alice", false, 3*time.Second)
+	mk("b-one", "bob", true, 4*time.Second)
+
+	ids := func(songs []*Song) []string {
+		out := make([]string, len(songs))
+		for i, g := range songs {
+			out[i] = g.ID
+		}
+		return out
+	}
+
+	// Personal: one owner's rows, newest first, nobody else's.
+	got, err := s.PersonalSongs("alice", 10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "a-new,a-mid,a-old"; strings.Join(ids(got), ",") != want {
+		t.Fatalf("PersonalSongs(alice) = %v, want %s", ids(got), want)
+	}
+	if got, _ := s.PersonalSongs("bob", 10, 0); len(got) != 1 || got[0].ID != "b-one" {
+		t.Fatalf("PersonalSongs(bob) = %v", ids(got))
+	}
+	// An unknown owner gets nothing rather than everything.
+	if got, err := s.PersonalSongs("nobody", 10, 0); err != nil || len(got) != 0 {
+		t.Fatalf("PersonalSongs(nobody) = %v, err=%v", ids(got), err)
+	}
+	if got, err := s.PersonalSongs("", 10, 0); err != nil || len(got) != 0 {
+		t.Fatalf("PersonalSongs(\"\") = %v, err=%v", ids(got), err)
+	}
+
+	// Public: only shared rows, across owners, newest first.
+	pub, err := s.PublicSongs(10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "a-mid,b-one"; strings.Join(ids(pub), ",") != want {
+		t.Fatalf("PublicSongs = %v, want %s", ids(pub), want)
+	}
+
+	// Paging is a window, not a filter.
+	if page2, _ := s.PersonalSongs("alice", 2, 2); len(page2) != 1 || page2[0].ID != "a-old" {
+		t.Fatalf("PersonalSongs page 2 = %v", ids(page2))
+	}
+
+	// Clamping: an absurd limit is capped, a negative one still returns rows,
+	// and a negative offset does not error.
+	if got, err := s.PersonalSongs("alice", 1_000_000, 0); err != nil || len(got) != 3 {
+		t.Fatalf("huge limit = %v, err=%v", ids(got), err)
+	}
+	if got, err := s.PersonalSongs("alice", -5, -5); err != nil || len(got) != 1 {
+		t.Fatalf("negative limit/offset = %v, err=%v", ids(got), err)
+	}
+	if got, err := s.PublicSongs(-1, -1); err != nil || len(got) != 1 {
+		t.Fatalf("PublicSongs negative = %v, err=%v", ids(got), err)
+	}
+	if l, o := clampPage(1_000_000, -3); l != MaxPageSize || o != 0 {
+		t.Fatalf("clampPage(1000000, -3) = %d, %d", l, o)
+	}
+	// Paging past the end is empty, not an error.
+	if got, err := s.PersonalSongs("alice", 10, 500); err != nil || len(got) != 0 {
+		t.Fatalf("deep offset = %v, err=%v", ids(got), err)
+	}
+}
+
+// TestPartitionQueriesUseTheirIndexes: the library must not degrade into a
+// full table scan as the song count grows.
+func TestPartitionQueriesUseTheirIndexes(t *testing.T) {
+	s := openTemp(t)
+	now := time.Now().UTC()
+	tx, err := s.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range 2000 {
+		if _, err := tx.Exec(`INSERT INTO songs (id, job_id, user_id, is_public,
+			lyrics, caption, duration_s, seed, engine, delivery, audio_path,
+			title, created_at) VALUES (?,?,?,?,'la','pop',30,NULL,'stub','base64','/tmp/x','t',?)`,
+			fmt.Sprintf("s%04d", i), fmt.Sprintf("j%04d", i),
+			fmt.Sprintf("u%d", i%40), i%2, now.Add(-time.Duration(i)*time.Second)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, c := range []struct{ name, query, wantIndex string }{
+		{"personal", `SELECT id FROM songs WHERE user_id = ? ORDER BY created_at DESC LIMIT 21 OFFSET 0`, "idx_songs_user_created"},
+		{"public", `SELECT id FROM songs WHERE is_public = 1 ORDER BY created_at DESC LIMIT 21 OFFSET 0`, "idx_songs_public_created"},
+	} {
+		var plan string
+		args := []any{}
+		if strings.Contains(c.query, "user_id = ?") {
+			args = append(args, "u3")
+		}
+		if err := s.db.QueryRow("EXPLAIN QUERY PLAN "+c.query, args...).
+			Scan(new(int), new(int), new(int), &plan); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(plan, c.wantIndex) {
+			t.Errorf("%s query does not use %s: %s", c.name, c.wantIndex, plan)
+		}
+		if strings.Contains(plan, "TEMP B-TREE") {
+			t.Errorf("%s query sorts instead of walking the index: %s", c.name, plan)
+		}
+	}
+}
