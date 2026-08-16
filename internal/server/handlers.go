@@ -105,6 +105,7 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 
 	j := &store.Job{
 		ID: worker.NewJobID(), State: store.StateQueued,
+		UserID: s.caller(r).UserID,
 		Lyrics: f.Lyrics, Caption: f.Caption,
 		Duration: f.Duration, Seed: f.Seed, CreatedAt: time.Now().UTC(),
 	}
@@ -157,7 +158,7 @@ func badTagLine(lyrics string) bool {
 // handleJobFragment is the htmx poll target. Terminal states stop polling
 // by answering 286 (htmx: stop polling).
 func (s *Server) handleJobFragment(w http.ResponseWriter, r *http.Request) {
-	j, err := s.st.Job(r.PathValue("id"))
+	j, err := s.st.Job(r.PathValue("id"), s.caller(r))
 	if err != nil || j == nil {
 		http.NotFound(w, r)
 		return
@@ -176,7 +177,7 @@ func (s *Server) handleJobFragment(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAudio(w http.ResponseWriter, r *http.Request) {
-	g, err := s.st.Song(r.PathValue("id"))
+	g, err := s.st.Song(r.PathValue("id"), s.caller(r))
 	if err != nil || g == nil {
 		http.NotFound(w, r)
 		return

@@ -2,7 +2,10 @@
 package store
 
 import (
+	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -44,6 +47,33 @@ var (
 	ErrTransition    = errors.New("store: state transition rejected")
 	ErrUsernameTaken = errors.New("store: username already taken")
 )
+
+// Access is who is asking. Every query that can read or destroy a tenant's
+// data takes one, and the ownership test lives in the SQL rather than in a
+// check the caller has to remember to write.
+//
+// The zero Access owns nothing and is not an admin, so a caller that forgets
+// to fill it in reads nothing and deletes nothing — the failure mode is an
+// empty result, never a leak. Build one with UserAccess or AdminAccess so the
+// privileged case is spelled out at the call site.
+type Access struct {
+	UserID string
+	Admin  bool
+}
+
+// UserAccess scopes an operation to one owner's rows.
+func UserAccess(userID string) Access { return Access{UserID: userID} }
+
+// AdminAccess lifts the ownership restriction. userID is still recorded as the
+// acting account so callers cannot pass an anonymous god object.
+func AdminAccess(userID string) Access { return Access{UserID: userID, Admin: true} }
+
+// ownedBy is the ownership predicate. Admin is a bound parameter, never
+// interpolated, so no caller input can reshape the query. Supply the arguments
+// with Access.args().
+const ownedBy = `(user_id = ? OR ?)`
+
+func (a Access) args() []any { return []any{a.UserID, a.Admin} }
 
 type Job struct {
 	ID        string
@@ -87,16 +117,48 @@ type User struct {
 	UpdatedAt    time.Time
 }
 
-// Session is a bearer token with a hard expiry. Username and IsAdmin are
-// denormalised so request auth is a single row read; UpdateUserStatus and
-// DeleteUser revoke sessions rather than let a stale copy outlive the change.
+// Session is a login with a hard expiry.
+//
+// The raw bearer token is never stored — only its SHA-256 — so a database
+// read, a backup, or a leaked query log yields nothing that can be replayed.
+// TokenHash is the stored key; the raw token exists only in the cookie and in
+// the caller's memory, and the store cannot hand it back.
+//
+// Username, IsAdmin and Status are resolved from the users table on every
+// read, never cached in the session row: a demotion, a disable, or a deletion
+// takes effect on the very next request instead of waiting for the cookie to
+// lapse. ConfigAdmin is the sole exception and is a stored flag, because the
+// static Infisical admin has no users row to resolve against.
 type Session struct {
-	Token     string
-	UserID    string
-	Username  string
-	IsAdmin   bool
-	CreatedAt time.Time
-	ExpiresAt time.Time
+	TokenHash   string
+	UserID      string
+	Username    string
+	ConfigAdmin bool   // input: the static config admin, which has no users row
+	IsAdmin     bool   // output: resolved live from users.role
+	Status      string // output: resolved live from users.status
+	CreatedAt   time.Time
+	ExpiresAt   time.Time
+}
+
+// MinTokenLen is the shortest bearer token CreateSession accepts. A 32-byte
+// random value is 64 hex characters, so this floor still rejects a truncated
+// or hand-written token without forcing an encoding on the caller. Length is
+// the only entropy proxy the store can check — use NewSessionToken.
+const MinTokenLen = 32
+
+// NewSessionToken returns a 32-byte cryptographically random token, hex
+// encoded. Callers should use this rather than rolling their own.
+func NewSessionToken() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
+}
+
+func hashToken(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
 }
 
 // Open creates the database and schema.
@@ -125,6 +187,20 @@ func (s *Store) Close() error { return s.db.Close() }
 // "2006-01-02 15:04:05.999999999 +0000 UTC". Mixing the two in one column
 // breaks the range comparison that expires_at depends on.
 func (s *Store) migrate() error {
+	// An earlier revision keyed sessions by the raw bearer token. Every row in
+	// such a table is directly replayable, so the table is rebuilt rather than
+	// migrated — the sessions are invalidated on purpose and those users log
+	// in again. No user, job, or song data is touched.
+	rawTokens, err := s.hasColumn("sessions", "token")
+	if err != nil {
+		return err
+	}
+	if rawTokens {
+		if _, err := s.db.Exec(`DROP TABLE sessions`); err != nil {
+			return err
+		}
+	}
+
 	if _, err := s.db.Exec(`
 CREATE TABLE IF NOT EXISTS jobs (
   id         TEXT PRIMARY KEY,
@@ -162,12 +238,12 @@ CREATE TABLE IF NOT EXISTS users (
   updated_at    TIMESTAMP NOT NULL
 );
 CREATE TABLE IF NOT EXISTS sessions (
-  token      TEXT PRIMARY KEY,
-  user_id    TEXT NOT NULL,
-  username   TEXT NOT NULL,
-  is_admin   INTEGER NOT NULL DEFAULT 0,
-  created_at TIMESTAMP NOT NULL,
-  expires_at TIMESTAMP NOT NULL
+  token_hash   TEXT PRIMARY KEY,
+  user_id      TEXT NOT NULL,
+  username     TEXT NOT NULL,
+  config_admin INTEGER NOT NULL DEFAULT 0,
+  created_at   TIMESTAMP NOT NULL,
+  expires_at   TIMESTAMP NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_jobs_state ON jobs(state);
 CREATE INDEX IF NOT EXISTS idx_songs_created ON songs(created_at DESC);
@@ -199,7 +275,7 @@ CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
 	}
 
 	// Indexes over the added columns, so they must follow the ALTERs.
-	_, err := s.db.Exec(`
+	_, err = s.db.Exec(`
 CREATE INDEX IF NOT EXISTS idx_jobs_user_id ON jobs(user_id);
 CREATE INDEX IF NOT EXISTS idx_songs_user_created ON songs(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_songs_public_created ON songs(is_public, created_at DESC);
@@ -275,9 +351,13 @@ func (s *Store) FailJob(id, reason string) error {
 	return nil
 }
 
-func (s *Store) Job(id string) (*Job, error) {
+// Job returns a job the caller owns, or nil. It is scoped for the same reason
+// Song is: the job-status route takes an id straight from the URL, and the
+// song it renders is reached through this lookup.
+func (s *Store) Job(id string, a Access) (*Job, error) {
 	row := s.db.QueryRow(`SELECT id, state, runpod_id, user_id, lyrics, caption,
-		duration_s, seed, error, created_at, updated_at FROM jobs WHERE id = ?`, id)
+		duration_s, seed, error, created_at, updated_at
+		FROM jobs WHERE id = ? AND `+ownedBy, append([]any{id}, a.args()...)...)
 	var j Job
 	err := row.Scan(&j.ID, &j.State, &j.RunPodID, &j.UserID, &j.Lyrics, &j.Caption,
 		&j.Duration, &j.Seed, &j.Error, &j.CreatedAt, &j.UpdatedAt)
@@ -378,9 +458,13 @@ func scanSong(sc interface{ Scan(...any) error }, g *Song) error {
 		&g.Duration, &g.Seed, &g.Engine, &g.Delivery, &g.AudioPath, &g.Title, &g.CreatedAt)
 }
 
-func (s *Store) Song(id string) (*Song, error) {
+// Song returns a song the caller is allowed to see, or nil. A non-owner is
+// indistinguishable from a missing row, so the API cannot be used to probe for
+// the existence of another tenant's songs.
+func (s *Store) Song(id string, a Access) (*Song, error) {
 	var g Song
-	err := scanSong(s.db.QueryRow(`SELECT `+songCols+` FROM songs WHERE id = ?`, id), &g)
+	err := scanSong(s.db.QueryRow(`SELECT `+songCols+`
+		FROM songs WHERE id = ? AND `+ownedBy, append([]any{id}, a.args()...)...), &g)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -403,12 +487,20 @@ func (s *Store) SongForJob(jobID string) (*Song, error) {
 	return &g, nil
 }
 
-// Songs pages the library newest-first, across all owners. Ownership scoping
-// is stage 04/05's job — this stays the unscoped read the worker and the
-// existing history page already use.
-func (s *Store) Songs(limit, offset int) ([]*Song, error) {
-	rows, err := s.db.Query(`SELECT `+songCols+`
-		FROM songs ORDER BY created_at DESC LIMIT ? OFFSET ?`, limit, offset)
+// Songs pages the caller's library newest-first; an admin sees every owner's.
+// The two shapes are separate statements rather than one predicate because
+// SQLite will not use idx_songs_user_created through an OR, and the library
+// page must not degrade into a full table scan as the song count grows.
+func (s *Store) Songs(limit, offset int, a Access) ([]*Song, error) {
+	q := `SELECT ` + songCols + ` FROM songs WHERE user_id = ?
+		ORDER BY created_at DESC LIMIT ? OFFSET ?`
+	args := []any{a.UserID, limit, offset}
+	if a.Admin {
+		q = `SELECT ` + songCols + ` FROM songs
+			ORDER BY created_at DESC LIMIT ? OFFSET ?`
+		args = []any{limit, offset}
+	}
+	rows, err := s.db.Query(q, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -424,11 +516,14 @@ func (s *Store) Songs(limit, offset int) ([]*Song, error) {
 	return out, rows.Err()
 }
 
-// DeleteSong removes a song and its associated job in a single transaction.
-// It returns the deleted song metadata (or nil if not found) so the caller can
-// clean up the audio file from disk.
-func (s *Store) DeleteSong(id string) (*Song, error) {
-	g, err := s.Song(id)
+// DeleteSong removes a song the caller owns, together with its job, in a
+// single transaction. It returns the deleted song (or nil if it does not exist
+// or is not the caller's) so the caller can unlink the audio file.
+//
+// The ownership predicate is repeated on the DELETE rather than trusting the
+// preceding read, so the destructive statement is safe read in isolation.
+func (s *Store) DeleteSong(id string, a Access) (*Song, error) {
+	g, err := s.Song(id, a)
 	if err != nil || g == nil {
 		return g, err
 	}
@@ -438,9 +533,16 @@ func (s *Store) DeleteSong(id string) (*Song, error) {
 	}
 	defer tx.Rollback()
 
-	if _, err := tx.Exec(`DELETE FROM songs WHERE id = ?`, id); err != nil {
+	res, err := tx.Exec(`DELETE FROM songs WHERE id = ? AND `+ownedBy,
+		append([]any{id}, a.args()...)...)
+	if err != nil {
 		return nil, err
 	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return nil, nil
+	}
+	// g.JobID comes from a row the caller was just authorised to delete, not
+	// from user input, so the job goes with it unconditionally.
 	if g.JobID != "" {
 		if _, err := tx.Exec(`DELETE FROM jobs WHERE id = ?`, g.JobID); err != nil {
 			return nil, err
@@ -452,9 +554,11 @@ func (s *Store) DeleteSong(id string) (*Song, error) {
 	return g, nil
 }
 
-// UpdateSongTitle updates the title of a song.
-func (s *Store) UpdateSongTitle(id, title string) error {
-	res, err := s.db.Exec(`UPDATE songs SET title = ? WHERE id = ?`, title, id)
+// UpdateSongTitle renames a song the caller owns. Renaming someone else's is
+// reported as sql.ErrNoRows — the same answer as a song that does not exist.
+func (s *Store) UpdateSongTitle(id, title string, a Access) error {
+	res, err := s.db.Exec(`UPDATE songs SET title = ? WHERE id = ? AND `+ownedBy,
+		append([]any{title, id}, a.args()...)...)
 	if err != nil {
 		return err
 	}
@@ -608,47 +712,84 @@ func (s *Store) CountPendingUsers() (int, error) {
 	return n, err
 }
 
-// CreateSession stores a token. ExpiresAt is required — a session without one
-// would never expire.
-func (s *Store) CreateSession(sess *Session) error {
+// CreateSession stores the SHA-256 of a bearer token. The raw token is taken
+// as an argument and never persisted, so there is no field on Session that
+// could carry a live secret back out of the store.
+//
+// Inputs read from sess: UserID, Username, ConfigAdmin, CreatedAt, ExpiresAt.
+// IsAdmin and Status are outputs of GetSession and are ignored here. On
+// success sess.TokenHash is filled in.
+func (s *Store) CreateSession(token string, sess *Session) error {
+	if len(token) < MinTokenLen {
+		return fmt.Errorf("store: session token must be at least %d characters, got %d",
+			MinTokenLen, len(token))
+	}
 	if sess.ExpiresAt.IsZero() {
 		return errors.New("store: session requires an expiry")
 	}
 	if sess.CreatedAt.IsZero() {
 		sess.CreatedAt = time.Now().UTC()
 	}
+	sess.TokenHash = hashToken(token)
 	_, err := s.db.Exec(
-		`INSERT INTO sessions (token, user_id, username, is_admin, created_at, expires_at)
+		`INSERT INTO sessions (token_hash, user_id, username, config_admin, created_at, expires_at)
 		 VALUES (?, ?, ?, ?, ?, ?)`,
-		sess.Token, sess.UserID, sess.Username, sess.IsAdmin,
+		sess.TokenHash, sess.UserID, sess.Username, sess.ConfigAdmin,
 		sess.CreatedAt.UTC(), sess.ExpiresAt.UTC())
 	return err
 }
 
-// GetSession returns a live session, or nil if the token is unknown or the
-// session has already expired. Expiry is enforced on read rather than left to
-// the sweep, so a token is dead the moment it lapses. The lookup is a primary
-// key seek.
+// GetSession takes the raw bearer token, hashes it, and returns the live
+// session it identifies — or nil if the token is unknown, the session has
+// expired, or the account behind it no longer exists.
+//
+// Expiry is enforced on read rather than left to the sweep, so a token is dead
+// the moment it lapses. Privilege and status are joined from the users table
+// rather than read from the session row, so a demoted, disabled, or deleted
+// account cannot keep acting on a cached copy. The lookup is a primary key
+// seek on the hash.
 func (s *Store) GetSession(token string) (*Session, error) {
-	var sess Session
+	var (
+		sess                       Session
+		uid, uname, urole, ustatus sql.NullString
+	)
 	err := s.db.QueryRow(
-		`SELECT token, user_id, username, is_admin, created_at, expires_at
-		 FROM sessions WHERE token = ? AND expires_at > ?`, token, time.Now().UTC()).
-		Scan(&sess.Token, &sess.UserID, &sess.Username, &sess.IsAdmin,
-			&sess.CreatedAt, &sess.ExpiresAt)
+		`SELECT s.token_hash, s.user_id, s.username, s.config_admin,
+		        s.created_at, s.expires_at, u.id, u.username, u.role, u.status
+		 FROM sessions s LEFT JOIN users u ON u.id = s.user_id
+		 WHERE s.token_hash = ? AND s.expires_at > ?`,
+		hashToken(token), time.Now().UTC()).
+		Scan(&sess.TokenHash, &sess.UserID, &sess.Username, &sess.ConfigAdmin,
+			&sess.CreatedAt, &sess.ExpiresAt, &uid, &uname, &urole, &ustatus)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
+
+	switch {
+	case uid.Valid:
+		// A real account: everything that governs authorisation comes from the
+		// users row as it is now, not from what was true at login.
+		sess.Username = uname.String
+		sess.IsAdmin = urole.String == RoleAdmin
+		sess.Status = ustatus.String
+	case sess.ConfigAdmin:
+		// The static config admin has no users row to resolve against.
+		sess.IsAdmin = true
+		sess.Status = StatusApproved
+	default:
+		// The account is gone; the session dies with it.
+		return nil, nil
+	}
 	return &sess, nil
 }
 
-// DeleteSession revokes one token (logout). Revoking an already-dead token is
-// not an error.
+// DeleteSession revokes one token (logout). Revoking an already-dead or
+// unknown token is not an error.
 func (s *Store) DeleteSession(token string) error {
-	_, err := s.db.Exec(`DELETE FROM sessions WHERE token = ?`, token)
+	_, err := s.db.Exec(`DELETE FROM sessions WHERE token_hash = ?`, hashToken(token))
 	return err
 }
 

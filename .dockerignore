@@ -3,6 +3,8 @@
 .goals
 .outline
 .serena
+.codegraph
+.tokensave
 node_modules
 npm-debug.log*
 

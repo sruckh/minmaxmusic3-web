@@ -307,8 +307,11 @@ func (w *Worker) finish(ctx context.Context, j *store.Job, out *runpod.Output) e
 	if err := audio.EncodeWAVToM4A(ctx, data, path); err != nil {
 		return fmt.Errorf("transcoding audio to m4a: %w", err)
 	}
+	// The song inherits the job's owner — otherwise every generated song would
+	// land on the legacy owner and be invisible to the user who asked for it.
 	return w.st.CreateSong(&store.Song{
-		ID: songID, JobID: j.ID, Lyrics: j.Lyrics, Caption: j.Caption,
+		ID: songID, JobID: j.ID, UserID: j.UserID,
+		Lyrics: j.Lyrics, Caption: j.Caption,
 		Duration: out.Duration, Seed: j.Seed, Engine: out.Engine,
 		Delivery: out.Delivery, AudioPath: path, Title: titleOf(j),
 		CreatedAt: time.Now().UTC(),

@@ -35,6 +35,7 @@ infisical.env
 .headroom/
 .serena/
 .codegraph/
+.tokensave/
 CLAUDE.md
 AGENTS.md
 
