@@ -1493,3 +1493,11 @@ select {
   border-left: 3px solid var(--amber, var(--green));
   border-radius: var(--radius);
 }
+
+/* ---- Public sharing toggle ---- */
+.share-toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}

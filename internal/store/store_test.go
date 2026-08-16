@@ -1047,3 +1047,73 @@ CREATE TABLE sessions (
 		t.Fatalf("new session after rebuild: %#v, err=%v", got, err)
 	}
 }
+
+// TestSetSongPublicIsScopedAndIdempotent pins the authorisation at the SQL
+// level rather than through a handler: a non-owner updates nothing, and the
+// target state is set rather than flipped.
+func TestSetSongPublicIsScopedAndIdempotent(t *testing.T) {
+	s := openTemp(t)
+	now := time.Now().UTC()
+	alice, bob := UserAccess("alice"), UserAccess("bob")
+
+	if err := s.CreateSong(&Song{ID: "s1", JobID: "j1", UserID: "alice",
+		Lyrics: "la", Caption: "pop", Duration: 30, Engine: "stub",
+		Delivery: "base64", AudioPath: "/tmp/a.m4a", CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+
+	// A non-owner gets (nil, nil) — the same answer as a missing song — and
+	// changes nothing.
+	got, err := s.SetSongPublic("s1", true, bob)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != nil {
+		t.Fatalf("bob shared alice's song: %#v", got)
+	}
+	if g, _ := s.Song("s1", alice); g.IsPublic {
+		t.Fatal("a non-owner's write took effect")
+	}
+	if got, err := s.SetSongPublic("no-such-song", true, alice); err != nil || got != nil {
+		t.Fatalf("missing song = %#v, err=%v; want nil, nil", got, err)
+	}
+
+	// The owner sets an explicit target, and the returned row reflects it.
+	got, err = s.SetSongPublic("s1", true, alice)
+	if err != nil || got == nil {
+		t.Fatalf("owner share = %#v, err=%v", got, err)
+	}
+	if !got.IsPublic || got.ID != "s1" || got.UserID != "alice" {
+		t.Fatalf("returned row = %#v", got)
+	}
+
+	// Repeating it is a no-op, not an undo — the property a blind flip lacks.
+	for i := 0; i < 3; i++ {
+		if got, err := s.SetSongPublic("s1", true, alice); err != nil || got == nil || !got.IsPublic {
+			t.Fatalf("repeat #%d = %#v, err=%v", i, got, err)
+		}
+	}
+	if got, err := s.SetSongPublic("s1", false, alice); err != nil || got == nil || got.IsPublic {
+		t.Fatalf("unshare = %#v, err=%v", got, err)
+	}
+
+	// An admin may act on anyone's song.
+	if got, err := s.SetSongPublic("s1", true, AdminAccess("root")); err != nil || got == nil || !got.IsPublic {
+		t.Fatalf("admin share = %#v, err=%v", got, err)
+	}
+	// The zero Access is not a skeleton key.
+	if got, err := s.SetSongPublic("s1", false, Access{}); err != nil || got != nil {
+		t.Fatalf("zero Access shared a song: %#v, err=%v", got, err)
+	}
+
+	// PublicSong only ever returns a shared song.
+	if g, err := s.PublicSong("s1"); err != nil || g == nil {
+		t.Fatalf("PublicSong on a shared song = %#v, err=%v", g, err)
+	}
+	if _, err := s.SetSongPublic("s1", false, alice); err != nil {
+		t.Fatal(err)
+	}
+	if g, err := s.PublicSong("s1"); err != nil || g != nil {
+		t.Fatalf("PublicSong on a private song = %#v, err=%v", g, err)
+	}
+}

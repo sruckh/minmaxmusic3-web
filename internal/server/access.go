@@ -115,6 +115,17 @@ func userFrom(ctx context.Context) (*UserContext, bool) {
 // it, and only an explicitly public pattern skips authentication.
 func (s *Server) protect(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Cross-origin state changes are refused before anything else, and for
+		// public routes too: login and logout are as forgeable as any other
+		// POST. See sameOriginWrite.
+		if !safeMethod(r) && !s.sameOriginWrite(r) {
+			s.log.Warn("cross-origin write refused", "path", r.URL.Path,
+				"origin", r.Header.Get("Origin"),
+				"fetch_site", r.Header.Get("Sec-Fetch-Site"))
+			s.deny(w, r, http.StatusForbidden, "cross-origin",
+				"This request did not come from this site.", "")
+			return
+		}
 		if s.levelFor(r) == accessPublic {
 			next.ServeHTTP(w, r)
 			return
@@ -208,6 +219,64 @@ func (s *Server) deny(w http.ResponseWriter, r *http.Request, code int, errCode,
 		// A non-GET browser request has nowhere useful to land; say so.
 		http.Error(w, msg, code)
 	}
+}
+
+// safeMethod reports whether a method is read-only and so cannot be the
+// payload of a forged state change.
+func safeMethod(r *http.Request) bool {
+	switch r.Method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions:
+		return true
+	}
+	return false
+}
+
+// sameOriginWrite reports whether a state-changing request originated from
+// this site.
+//
+// This is the CSRF defence, and it is deliberately not a token. The session
+// cookie is SameSite=Lax, which already stops a *cross-site* attacker: their
+// POST arrives without the cookie and is simply unauthenticated. What Lax does
+// not stop is a **same-site** attacker — any sibling host under the same
+// registrable domain is "same-site" to a cookie, so an XSS or open redirect in
+// a neighbouring service on this domain could otherwise forge a write here.
+// An origin check does stop that, because a sibling host sends its own Origin.
+//
+// The rules, in order:
+//
+//   - Sec-Fetch-Site, when the browser sends it, is authoritative. "same-origin"
+//     and "none" (a user-typed navigation) are ours; "same-site" and
+//     "cross-site" are not.
+//   - Otherwise Origin, when present, must be this site.
+//   - Otherwise allow. No browser signal at all means no browser, and CSRF
+//     requires a browser to supply the ambient credentials. Refusing here would
+//     break curl and server-to-server callers while stopping no attack, since
+//     every browser sends Origin on a cross-origin write.
+func (s *Server) sameOriginWrite(r *http.Request) bool {
+	switch r.Header.Get("Sec-Fetch-Site") {
+	case "same-origin", "none":
+		return true
+	case "same-site", "cross-site":
+		return false
+	}
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true
+	}
+	u, err := url.Parse(origin)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	if strings.EqualFold(u.Host, r.Host) {
+		return true
+	}
+	if s.cfg.PublicURL != "" {
+		if pub, err := url.Parse(s.cfg.PublicURL); err == nil &&
+			strings.EqualFold(u.Host, pub.Host) && u.Scheme == pub.Scheme {
+			return true
+		}
+	}
+	return false
 }
 
 // wantsJSON reports whether the caller is an API client rather than a browser

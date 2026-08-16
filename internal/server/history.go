@@ -56,7 +56,73 @@ func (s *Server) handleSongDetail(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	s.execute(w, "song.html", map[string]any{"Page": "history", "Song": g})
+	// CanEdit drives the owner-only controls. It is presentation only — every
+	// mutating endpoint re-derives ownership in its own SQL, so hiding a
+	// control is never what stops a non-owner.
+	s.execute(w, "song.html", map[string]any{
+		"Page": "history", "Song": g, "CanEdit": s.owns(r, g),
+	})
+}
+
+// owns reports whether the caller may mutate this song.
+func (s *Server) owns(r *http.Request, g *store.Song) bool {
+	a := s.caller(r)
+	return a.Admin || (a.UserID != "" && a.UserID == g.UserID)
+}
+
+// handleToggleSongPublic shares or unshares a song.
+//
+// Despite the route name it sets an explicit target rather than flipping:
+// the caller sends public=1 or public=0. A blind flip makes the outcome depend
+// on the order two tabs happen to arrive in, so a user pressing the control
+// twice cannot say what state their song ended in. Setting a target is
+// idempotent — two clients sharing the same song both succeed and it is
+// shared — and the write itself is one ownership-scoped statement.
+func (s *Server) handleToggleSongPublic(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "Could not read that form.", http.StatusBadRequest)
+		return
+	}
+	public, ok := parseBoolField(r.FormValue("public"))
+	if !ok {
+		http.Error(w,
+			"Send public=1 to share this song or public=0 to make it private.",
+			http.StatusBadRequest)
+		return
+	}
+
+	id := r.PathValue("id")
+	g, err := s.st.SetSongPublic(id, public, s.caller(r))
+	if err != nil {
+		s.log.Error("toggle public", "id", id, "err", err)
+		http.Error(w, "Could not update sharing.", http.StatusInternalServerError)
+		return
+	}
+	// No such song, or not this caller's: answer exactly as for a song that
+	// does not exist, so the endpoint cannot confirm an id belongs to someone.
+	if g == nil {
+		http.NotFound(w, r)
+		return
+	}
+	s.log.Info("song sharing changed", "id", g.ID, "public", g.IsPublic)
+
+	if r.Header.Get("HX-Request") == "true" {
+		s.execute(w, "share-toggle.html", map[string]any{"Song": g, "CanEdit": true})
+		return
+	}
+	http.Redirect(w, r, "/songs/"+g.ID, http.StatusSeeOther)
+}
+
+// parseBoolField reads an explicit boolean form value. An absent or unreadable
+// value is rejected rather than guessed at.
+func parseBoolField(v string) (value, ok bool) {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "on", "yes":
+		return true, true
+	case "0", "false", "off", "no":
+		return false, true
+	}
+	return false, false
 }
 
 // handleRegenerate re-submits a past song's exact inputs (same seed).
