@@ -12,75 +12,17 @@
       </div>
     </div>
 
-    {{if not .Songs}}
-    <div class="empty-state">
-      <p style="margin-bottom:12px">No songs in your library yet — describe a sound on the console and press Generate.</p>
-      <a class="btn btn--secondary" href="/">Write a song</a>
-    </div>
-    {{else}}
-    <table class="table">
-      <thead><tr><th>Title</th><th>Length</th><th>Seed</th><th>Engine</th><th>Created</th><th></th></tr></thead>
-      <tbody>
-        {{range .Songs}}
-        <tr class="row-link">
-          <td x-data="{ editing: false, title: {{printf "%q" .Title}} }" @click.outside="if (editing) { editing = false; $refs.titleInput.value = title; }">
-            <div x-show="!editing" style="display:flex; align-items:center; gap:8px;">
-              <a href="/songs/{{.ID}}" style="font-weight:600; text-decoration:none" x-text="title">{{.Title}}</a>
-              <button type="button" @click="editing = true; $nextTick(() => $refs.titleInput.focus())"
-                      class="btn btn--ghost"
-                      title="Edit title"
-                      aria-label="Edit title"
-                      style="padding:1px 5px; font-size:0.75rem; min-height:22px; width:auto; border-color:transparent; color:var(--text-tertiary); cursor:pointer;">
-                ✎
-              </button>
-            </div>
-            <form x-show="editing" x-cloak
-                  hx-post="/songs/{{.ID}}/title"
-                  hx-swap="none"
-                  @submit="title = $refs.titleInput.value.trim() || title; editing = false;"
-                  style="display:flex; align-items:center; gap:6px; margin:0;">
-              <input type="text" name="title" x-ref="titleInput" :value="title"
-                     required maxlength="100"
-                     class="input"
-                     style="padding:3px 8px; font-size:0.875rem; min-height:28px; width:180px; max-width:100%;"
-                     @keydown.escape="editing = false; $refs.titleInput.value = title">
-              <button type="submit" class="btn btn--secondary btn--sm" style="padding:2px 8px; min-height:28px; font-size:0.75rem;">Save</button>
-              <button type="button" @click="editing = false; $refs.titleInput.value = title" class="btn btn--ghost btn--sm" style="padding:2px 8px; min-height:28px; font-size:0.75rem;">✕</button>
-            </form>
-          </td>
-          <td class="num">{{duration .Duration}}</td>
-          <td class="num">{{if .Seed}}{{.Seed}}{{else}}—{{end}}</td>
-          <td><span class="badge">{{.Engine}}</span></td>
-          <td class="num">
-            <time datetime="{{.CreatedAt.Format "2006-01-02T15:04:05Z"}}"
-                  x-data="{ formatted: '' }"
-                  x-init="formatted = new Date('{{.CreatedAt.Format "2006-01-02T15:04:05Z"}}').toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })"
-                  x-text="formatted || '{{.CreatedAt.Format "Jan 2, 15:04"}}'">
-              {{.CreatedAt.Format "Jan 2, 15:04"}}
-            </time>
-          </td>
-          <td style="text-align:right; white-space:nowrap;">
-            <div style="display:inline-flex; gap:6px; align-items:center;">
-              <a class="btn btn--ghost btn--sm" href="/audio/{{.ID}}" download>Download</a>
-              <button type="button" class="btn btn--ghost btn--sm btn--danger"
-                      hx-delete="/songs/{{.ID}}"
-                      hx-target="closest tr"
-                      hx-swap="outerHTML swap:300ms"
-                      hx-confirm="Are you sure you want to delete '{{.Title}}'?"
-                      aria-label="Delete song">
-                Delete
-              </button>
-            </div>
-          </td>
-        </tr>
-        {{end}}
-      </tbody>
-    </table>
-    <nav aria-label="History pages" style="display:flex;gap:.75rem;margin-top:1.5rem" hx-boost="true">
-      {{if .HasPrev}}<a class="btn btn--ghost btn--sm" href="/history?page={{.PrevPage}}">Newer</a>{{end}}
-      {{if .HasNext}}<a class="btn btn--ghost btn--sm" href="/history?page={{.NextPage}}">Older</a>{{end}}
-    </nav>
-    {{end}}
+    <section class="library-section">
+      <h2 class="library-heading">{{.Personal.Heading}}</h2>
+      {{template "songs-section.html" .Personal}}
+    </section>
+
+    <section class="library-section">
+      <h2 class="library-heading">{{.Public.Heading}}</h2>
+      <p class="library-note">Songs other people have chosen to share. Yours appear
+        here only after you share them.</p>
+      {{template "songs-section.html" .Public}}
+    </section>
   </main>
 
   <p class="footer-note">MM3 — local session, nothing leaves your browser</p>

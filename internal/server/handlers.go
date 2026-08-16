@@ -28,6 +28,8 @@ func (s *Server) registerFeatures(rt *router) {
 	rt.handleFunc("GET /jobs/{id}", s.handleJobFragment)
 	rt.handleFunc("GET /audio/{id}", s.handleAudio)
 	rt.handleFunc("GET /history", s.handleHistory)
+	rt.handleFunc("GET /history/personal", s.handleHistoryPersonal)
+	rt.handleFunc("GET /history/public", s.handleHistoryPublic)
 	rt.handleFunc("GET /songs/{id}", s.handleSongDetail)
 	rt.handleFunc("POST /songs/{id}/regenerate", s.handleRegenerate)
 	rt.handleFunc("DELETE /songs/{id}", s.handleDeleteSong)
