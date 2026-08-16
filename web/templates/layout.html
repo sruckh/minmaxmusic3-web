@@ -33,14 +33,16 @@
   </a>
   <div class="topbar-right">
     <span class="pwr"><span class="led"></span>PWR</span>
-    <nav class="nav-links">
+    {{if .User}}
+    <nav class="nav-links" aria-label="Primary">
       <a href="/" {{if eq .Page "index"}}aria-current="page"{{end}}>Generate</a>
       <a href="/history" {{if eq .Page "history"}}aria-current="page"{{end}}>History</a>
-      {{if .User}}{{if .User.IsAdmin}}
+      {{if .User.IsAdmin}}
       <a href="/admin" {{if eq .Page "admin"}}aria-current="page"{{end}}>Admin{{if gt .User.PendingCount 0}}
         <span class="nav-badge">{{.User.PendingCount}} Pending</span>{{end}}</a>
-      {{end}}{{end}}
+      {{end}}
     </nav>
+    {{end}}
     {{if .User}}
     <div class="session-identity">
       <span class="current-user" title="Signed in as {{.User.Username}}">{{.User.Username}}</span>

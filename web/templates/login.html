@@ -1,39 +1,123 @@
 <!doctype html>
 <html lang="en">
 <head>{{template "head" .}}</head>
-<body>
-<div class="shell">
+<body class="auth-page">
+<div class="shell auth-shell">
   {{template "nav" .}}
-  <main class="session">
-    <div class="session-head">
-      <div style="display:flex; align-items:center; gap:12px;">
-        <span class="eyebrow"><span class="dot" style="background:var(--green)"></span>ACCESS</span>
-        <h1 style="font-family:var(--font-display); font-size:1.2rem; font-weight:500; margin:0">Sign in</h1>
+
+  <main class="auth-console" aria-labelledby="login-title">
+    <section class="auth-module auth-module--credentials">
+      <header class="auth-module__head">
+        <div>
+          <span class="eyebrow"><span class="dot"></span>SECURE INPUT / CH.01</span>
+          <h1 id="login-title" class="auth-title">Sign in</h1>
+        </div>
+        <span class="auth-module__index" aria-hidden="true">01</span>
+      </header>
+
+      <p id="login-guidance" class="auth-lede">
+        Enter the credentials for your approved account to open the music console.
+      </p>
+
+      {{if .Notice}}
+      <div id="login-notice" class="auth-notice" role="status" aria-live="polite">
+        <span class="auth-notice__label">NOTICE</span>
+        <p>{{.Notice}}</p>
       </div>
-    </div>
+      {{end}}
 
-    {{if .Notice}}<p class="notice" role="status">{{.Notice}}</p>{{end}}
+      <form id="login-form" method="post" action="/login" class="auth-form"
+            aria-describedby="login-guidance{{if .Notice}} login-notice{{end}}"
+            x-data="{ showPassword: false }">
+        {{if .Next}}<input type="hidden" name="next" value="{{.Next}}">{{end}}
 
-    <form method="post" action="/login" class="auth-form">
-      {{if .Next}}<input type="hidden" name="next" value="{{.Next}}">{{end}}
-      <label for="username">Username</label>
-      <input id="username" name="username" type="text" autocomplete="username"
-             value="{{.Username}}" required autofocus>
+        <div class="auth-field">
+          <label class="field-label" for="username">
+            <span class="auth-field__channel">01</span>
+            Username
+          </label>
+          <div class="auth-input-frame">
+            <span class="auth-input-frame__lead" aria-hidden="true">@</span>
+            <input class="auth-input" id="username" name="username" type="text"
+                   autocomplete="username" autocapitalize="none" spellcheck="false"
+                   value="{{.Username}}" required autofocus>
+          </div>
+        </div>
 
-      <label for="password">Password</label>
-      <input id="password" name="password" type="password"
-             autocomplete="current-password" required>
+        <div class="auth-field">
+          <label class="field-label" for="password">
+            <span class="auth-field__channel">02</span>
+            Password
+          </label>
+          <div class="auth-input-frame auth-input-frame--action">
+            <input class="auth-input" id="password" name="password" type="password"
+                   x-bind:type="showPassword ? 'text' : 'password'"
+                   autocomplete="current-password" required>
+            <button type="button" class="auth-reveal" aria-controls="password"
+                    aria-pressed="false"
+                    x-bind:aria-pressed="showPassword ? 'true' : 'false'"
+                    x-bind:aria-label="showPassword ? 'Hide password' : 'Show password'"
+                    @click="showPassword = !showPassword">
+              <span x-text="showPassword ? 'HIDE' : 'SHOW'">SHOW</span>
+            </button>
+          </div>
+        </div>
 
-      <button class="btn" type="submit">Sign in</button>
-    </form>
+        <button class="btn auth-submit" type="submit">
+          <span>Sign in</span>
+          <span class="auth-submit__glyph" aria-hidden="true">&#8594;</span>
+        </button>
+      </form>
 
-    <p class="footer-note">
-      No account yet? <a href="/register">Request access</a> — an administrator
-      approves new accounts before first sign-in.
-    </p>
+      <div class="auth-access-note">
+        <span class="auth-access-note__label">ACCOUNT STATUS</span>
+        <p>
+          No account yet? <a href="/register">Request access</a>. An administrator
+          approves new accounts before first sign-in.
+        </p>
+      </div>
+    </section>
+
+    <aside class="auth-module auth-module--signal" aria-labelledby="access-monitor-title">
+      <header class="auth-module__head">
+        <div>
+          <span class="eyebrow"><span class="dot"></span>ACCESS BUS / MONITOR</span>
+          <h2 id="access-monitor-title" class="auth-signal-title">Private console</h2>
+        </div>
+        <span class="auth-module__index" aria-hidden="true">A</span>
+      </header>
+
+      <div class="auth-meter" aria-hidden="true">
+        <span></span><span></span><span></span><span></span><span></span>
+        <span></span><span></span><span></span><span></span><span></span>
+        <span></span><span></span><span></span><span></span><span></span>
+      </div>
+
+      <dl class="auth-status-grid">
+        <div>
+          <dt>Gate</dt>
+          <dd><span class="auth-status-dot auth-status-dot--green"></span>Approved accounts</dd>
+        </div>
+        <div>
+          <dt>Library</dt>
+          <dd><span class="auth-status-dot auth-status-dot--violet"></span>Private by default</dd>
+        </div>
+        <div>
+          <dt>Session</dt>
+          <dd><span class="auth-status-dot auth-status-dot--crimson"></span>Server managed</dd>
+        </div>
+      </dl>
+
+      <p class="auth-privacy">
+        Songs are stored on this server and stay private until you choose to share them.
+      </p>
+    </aside>
+
+    <footer class="auth-console__footer">
+      <span>MM3 / ACCESS PANEL</span>
+      <span>MiniMax Music 3 Console</span>
+    </footer>
   </main>
-
-  <p class="footer-note">MM3 — songs are stored on this server and stay private until you share them</p>
 </div>
 </body>
 </html>
