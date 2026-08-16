@@ -19,19 +19,19 @@ const (
 	assistLimitPerDay = 20
 )
 
-func (s *Server) registerFeatures(mux *http.ServeMux) {
+func (s *Server) registerFeatures(rt *router) {
 	s.genLimiter = newLimiter(genLimitPerHour, time.Hour)
 	s.assistLimiter = newLimiter(assistLimitPerDay, 24*time.Hour)
 
-	mux.HandleFunc("POST /assistant", s.handleAssistant)
-	mux.HandleFunc("POST /jobs", s.handleCreateJob)
-	mux.HandleFunc("GET /jobs/{id}", s.handleJobFragment)
-	mux.HandleFunc("GET /audio/{id}", s.handleAudio)
-	mux.HandleFunc("GET /history", s.handleHistory)
-	mux.HandleFunc("GET /songs/{id}", s.handleSongDetail)
-	mux.HandleFunc("POST /songs/{id}/regenerate", s.handleRegenerate)
-	mux.HandleFunc("DELETE /songs/{id}", s.handleDeleteSong)
-	mux.HandleFunc("POST /songs/{id}/title", s.handleUpdateSongTitle)
+	rt.handleFunc("POST /assistant", s.handleAssistant)
+	rt.handleFunc("POST /jobs", s.handleCreateJob)
+	rt.handleFunc("GET /jobs/{id}", s.handleJobFragment)
+	rt.handleFunc("GET /audio/{id}", s.handleAudio)
+	rt.handleFunc("GET /history", s.handleHistory)
+	rt.handleFunc("GET /songs/{id}", s.handleSongDetail)
+	rt.handleFunc("POST /songs/{id}/regenerate", s.handleRegenerate)
+	rt.handleFunc("DELETE /songs/{id}", s.handleDeleteSong)
+	rt.handleFunc("POST /songs/{id}/title", s.handleUpdateSongTitle)
 }
 
 // handleAssistant proxies the LLM and returns the parsed draft as JSON for
@@ -176,8 +176,12 @@ func (s *Server) handleJobFragment(w http.ResponseWriter, r *http.Request) {
 	s.renderJob(w, j)
 }
 
+// handleAudio streams the bytes, so it is the sharpest authorisation edge in
+// the app: owner, administrator, or an explicitly shared song and nothing
+// else. A refusal is a plain 404 — identical to a song that does not exist —
+// so the endpoint cannot be used to probe which ids are real.
 func (s *Server) handleAudio(w http.ResponseWriter, r *http.Request) {
-	g, err := s.st.Song(r.PathValue("id"), s.caller(r))
+	g, err := s.readableSong(r, r.PathValue("id"))
 	if err != nil || g == nil {
 		http.NotFound(w, r)
 		return

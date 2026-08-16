@@ -34,6 +34,11 @@ type Server struct {
 	assistLimiter   *limiter
 	loginLimiter    *limiter
 	registerLimiter *limiter
+
+	// classifier maps a request to the access level its route demands;
+	// routes records every registered pattern so a test can enumerate them.
+	classifier *http.ServeMux
+	routes     []string
 }
 
 // New parses templates from <WebDir>/templates. Paths come from config, so
@@ -99,26 +104,33 @@ func (s *Server) Close() {
 	}
 }
 
-// Routes builds the HTTP mux.
+// Routes builds the HTTP mux and returns it wrapped in the access-control
+// middleware.
+//
+// The wrapping is the point: protection is not something each route opts into,
+// it is what every route gets unless its pattern appears in publicPatterns. A
+// route added here without any further thought is authenticated-only.
 func (s *Server) Routes() http.Handler {
-	mux := http.NewServeMux()
+	rt := &router{mux: http.NewServeMux()}
 
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
+	rt.handleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
 
 	tags := []string{"Intro", "Verse", "Pre-Chorus", "Chorus", "Post-Chorus",
 		"Bridge", "Instrumental", "Solo", "Outro"}
-	mux.HandleFunc("GET /{$}", s.page("index.html", map[string]any{"Page": "index", "Tags": tags}))
+	rt.handleFunc("GET /{$}", s.page("index.html", map[string]any{"Page": "index", "Tags": tags}))
 
-	s.registerAuth(mux)
-	s.registerFeatures(mux)
+	s.registerAuth(rt)
+	s.registerFeatures(rt)
 
 	static := http.FileServer(http.Dir(filepath.Join(s.cfg.WebDir, "static")))
-	mux.Handle("GET /static/", http.StripPrefix("/static/", static))
+	rt.handle("GET /static/", http.StripPrefix("/static/", static))
 
-	return mux
+	s.routes = rt.patterns
+	s.classifier = newClassifier()
+	return s.protect(rt.mux)
 }
 
 // page renders a template fully into memory first, so a template error is a
