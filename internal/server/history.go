@@ -16,6 +16,16 @@ import (
 
 const pageSize = 20
 
+// caller is the ownership scope for the current request. Authentication lands
+// in stages 02–03; until it does every request is unauthenticated and sees
+// exactly the legacy-owned rows this build already created, which is what the
+// store now enforces in SQL. Stage 03 replaces this with the session user —
+// it is deliberately not an admin scope, so forgetting to replace it fails
+// closed rather than exposing every tenant.
+func (s *Server) caller(r *http.Request) store.Access {
+	return store.UserAccess(store.LegacyUserID)
+}
+
 // handleHistory renders the library, newest first, with pagination links.
 func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 	page := 1
@@ -26,7 +36,7 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 	}
 	// Fetch one extra row so HasNext is exact — no phantom "Older" link on
 	// a boundary page.
-	songs, err := s.st.Songs(pageSize+1, (page-1)*pageSize)
+	songs, err := s.st.Songs(pageSize+1, (page-1)*pageSize, s.caller(r))
 	if err != nil {
 		s.log.Error("history", "err", err)
 		http.Error(w, "Could not load the library.", http.StatusInternalServerError)
@@ -46,7 +56,7 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 // handleSongDetail renders one song with full lyrics + caption + player.
 // A store failure is a 500; only a clean miss is a 404.
 func (s *Server) handleSongDetail(w http.ResponseWriter, r *http.Request) {
-	g, err := s.st.Song(r.PathValue("id"))
+	g, err := s.st.Song(r.PathValue("id"), s.caller(r))
 	if err != nil {
 		s.log.Error("song detail", "err", err)
 		http.Error(w, "Could not load that song.", http.StatusInternalServerError)
@@ -64,7 +74,7 @@ func (s *Server) handleRegenerate(w http.ResponseWriter, r *http.Request) {
 	if !s.genAllowed(w, r, s.genLimiter, "generation") {
 		return
 	}
-	g, err := s.st.Song(r.PathValue("id"))
+	g, err := s.st.Song(r.PathValue("id"), s.caller(r))
 	if err != nil {
 		s.log.Error("regenerate lookup", "err", err)
 		http.Error(w, "Could not load that song.", http.StatusInternalServerError)
@@ -76,6 +86,7 @@ func (s *Server) handleRegenerate(w http.ResponseWriter, r *http.Request) {
 	}
 	j := &store.Job{
 		ID: worker.NewJobID(), State: store.StateQueued,
+		UserID: s.caller(r).UserID,
 		Lyrics: g.Lyrics, Caption: g.Caption,
 		Duration: g.Duration, Seed: g.Seed, CreatedAt: time.Now().UTC(),
 	}
@@ -89,7 +100,7 @@ func (s *Server) handleRegenerate(w http.ResponseWriter, r *http.Request) {
 // handleDeleteSong removes a song and its audio file on disk, returning 200 for HTMX row removal.
 func (s *Server) handleDeleteSong(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	g, err := s.st.DeleteSong(id)
+	g, err := s.st.DeleteSong(id, s.caller(r))
 	if err != nil {
 		s.log.Error("delete song", "id", id, "err", err)
 		http.Error(w, "Could not delete that song.", http.StatusInternalServerError)
@@ -132,7 +143,7 @@ func (s *Server) handleUpdateSongTitle(w http.ResponseWriter, r *http.Request) {
 	if len(title) > 100 {
 		title = title[:100]
 	}
-	if err := s.st.UpdateSongTitle(id, title); err != nil {
+	if err := s.st.UpdateSongTitle(id, title, s.caller(r)); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			http.NotFound(w, r)
 			return
@@ -144,5 +155,3 @@ func (s *Server) handleUpdateSongTitle(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	_, _ = fmt.Fprint(w, title)
 }
-
-
