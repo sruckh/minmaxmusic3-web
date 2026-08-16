@@ -48,6 +48,23 @@ func New(cfg *config.Config, log *slog.Logger) (*Server, error) {
 		"duration": func(secs float64) string {
 			return fmt.Sprintf("%d:%02d", int(secs)/60, int(secs)%60)
 		},
+		// dict builds a map inline so a sub-template can be handed more than
+		// one value. Keys must be strings; an odd argument count is a
+		// programming error and fails the render rather than guessing.
+		"dict": func(pairs ...any) (map[string]any, error) {
+			if len(pairs)%2 != 0 {
+				return nil, fmt.Errorf("dict: odd argument count %d", len(pairs))
+			}
+			m := make(map[string]any, len(pairs)/2)
+			for i := 0; i < len(pairs); i += 2 {
+				k, ok := pairs[i].(string)
+				if !ok {
+					return nil, fmt.Errorf("dict: key %d is not a string", i)
+				}
+				m[k] = pairs[i+1]
+			}
+			return m, nil
+		},
 	}).ParseGlob(filepath.Join(cfg.WebDir, "templates", "*.html"))
 	if err != nil {
 		return nil, fmt.Errorf("parsing templates: %w", err)
@@ -124,6 +141,7 @@ func (s *Server) Routes() http.Handler {
 
 	s.registerAuth(rt)
 	s.registerFeatures(rt)
+	s.registerAdmin(rt)
 
 	static := http.FileServer(http.Dir(filepath.Join(s.cfg.WebDir, "static")))
 	rt.handle("GET /static/", http.StripPrefix("/static/", static))
@@ -135,9 +153,10 @@ func (s *Server) Routes() http.Handler {
 
 // page renders a template fully into memory first, so a template error is a
 // clean 500 — never a truncated 200.
-func (s *Server) page(name string, data any) http.HandlerFunc {
+func (s *Server) page(name string, data map[string]any) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		s.execute(w, filepath.Base(name), data)
+		// pageData copies, so concurrent requests never share the map.
+		s.execute(w, filepath.Base(name), s.pageData(r, data))
 	}
 }
 

@@ -383,6 +383,29 @@ func (s *Server) caller(r *http.Request) store.Access {
 	return store.UserAccess(uc.UserID)
 }
 
+// pageData builds the template data for a full page, injecting the current
+// user so the layout can render the nav, the admin tab, and the pending badge.
+//
+// It is only ever added for a request that cleared the middleware, so a page
+// rendered without a session — login, register — simply has no .User and the
+// layout renders nothing admin-shaped. The badge count therefore cannot reach
+// a non-admin layout: UserContext.PendingCount is populated only for
+// administrators in the first place.
+func (s *Server) pageData(r *http.Request, data map[string]any) map[string]any {
+	out := make(map[string]any, len(data)+1)
+	for k, v := range data {
+		out[k] = v
+	}
+	if uc, ok := userFrom(r.Context()); ok {
+		out["User"] = uc
+	}
+	return out
+}
+
+// urlQueryEscape is url.QueryEscape, named here so admin.go need not import
+// net/url for one call.
+func urlQueryEscape(v string) string { return url.QueryEscape(v) }
+
 // readableSong returns a song the caller is allowed to see: their own, any
 // song if they are an administrator, or one explicitly shared as public.
 func (s *Server) readableSong(r *http.Request, id string) (*store.Song, error) {

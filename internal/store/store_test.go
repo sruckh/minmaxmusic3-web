@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -406,11 +407,11 @@ func TestUserCRUD(t *testing.T) {
 	if err := s.UpdateUserStatus("ghost", StatusApproved); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("status update on a missing user = %v, want sql.ErrNoRows", err)
 	}
-	if err := s.DeleteUser("ghost"); !errors.Is(err, sql.ErrNoRows) {
+	if _, err := s.DeleteUser("ghost"); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("DeleteUser on a missing user = %v, want sql.ErrNoRows", err)
 	}
 
-	if err := s.DeleteUser("u2"); err != nil {
+	if _, err := s.DeleteUser("u2"); err != nil {
 		t.Fatal(err)
 	}
 	if got, err := s.GetUserByID("u2"); err != nil || got != nil {
@@ -538,7 +539,7 @@ func TestDisablingUserRevokesSessions(t *testing.T) {
 	}
 
 	// Deleting an account drops its sessions too.
-	if err := s.DeleteUser(other.ID); err != nil {
+	if _, err := s.DeleteUser(other.ID); err != nil {
 		t.Fatal(err)
 	}
 	if got, err := s.GetSession(testToken("b1")); err != nil || got != nil {
@@ -1240,5 +1241,160 @@ func TestPartitionQueriesUseTheirIndexes(t *testing.T) {
 		if strings.Contains(plan, "TEMP B-TREE") {
 			t.Errorf("%s query sorts instead of walking the index: %s", c.name, plan)
 		}
+	}
+}
+
+// TestDeleteUserCascadesInOneTransaction pins the deletion semantics at the
+// store level: everything belonging to the user goes, nobody else's does, and
+// the audio paths come back for the caller to unlink.
+func TestDeleteUserCascadesInOneTransaction(t *testing.T) {
+	s := openTemp(t)
+	now := time.Now().UTC()
+	doomed := mustCreateUser(t, s, testUser("u-doomed", "doomed"))
+	keeper := mustCreateUser(t, s, testUser("u-keeper", "keeper"))
+
+	mkSong := func(id, owner, path string) {
+		t.Helper()
+		if err := s.CreateSong(&Song{ID: id, JobID: "j-" + id, UserID: owner,
+			Lyrics: "la", Caption: "pop", Duration: 30, Engine: "stub",
+			Delivery: "base64", AudioPath: path, CreatedAt: now}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mkSong("d1", doomed.ID, "/tmp/d1.m4a")
+	mkSong("d2", doomed.ID, "/tmp/d2.m4a")
+	mkSong("k1", keeper.ID, "/tmp/k1.m4a")
+
+	for _, id := range []string{"jd1", "jd2"} {
+		j := testJob(id)
+		j.UserID = doomed.ID
+		if err := s.CreateJob(j); err != nil {
+			t.Fatal(err)
+		}
+	}
+	jk := testJob("jk1")
+	jk.UserID = keeper.ID
+	if err := s.CreateJob(jk); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateSession(testToken("doomed"), &Session{UserID: doomed.ID,
+		Username: "doomed", CreatedAt: now, ExpiresAt: now.Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateSession(testToken("keeper"), &Session{UserID: keeper.ID,
+		Username: "keeper", CreatedAt: now, ExpiresAt: now.Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+
+	paths, err := s.DeleteUser(doomed.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sort.Strings(paths)
+	if strings.Join(paths, ",") != "/tmp/d1.m4a,/tmp/d2.m4a" {
+		t.Fatalf("returned audio paths = %v", paths)
+	}
+
+	// Everything of theirs is gone, even to an admin.
+	if u, _ := s.GetUserByID(doomed.ID); u != nil {
+		t.Error("user survived")
+	}
+	for _, id := range []string{"d1", "d2"} {
+		if g, _ := s.Song(id, AdminAccess("root")); g != nil {
+			t.Errorf("song %s survived", id)
+		}
+	}
+	for _, id := range []string{"jd1", "jd2"} {
+		if j, _ := s.Job(id, AdminAccess("root")); j != nil {
+			t.Errorf("job %s survived", id)
+		}
+	}
+	if sess, _ := s.GetSession(testToken("doomed")); sess != nil {
+		t.Error("session survived")
+	}
+
+	// Nobody else was touched.
+	if u, _ := s.GetUserByID(keeper.ID); u == nil {
+		t.Fatal("the wrong user was deleted")
+	}
+	if g, _ := s.Song("k1", UserAccess(keeper.ID)); g == nil {
+		t.Error("another user's song was deleted")
+	}
+	if j, _ := s.Job("jk1", UserAccess(keeper.ID)); j == nil {
+		t.Error("another user's job was deleted")
+	}
+	if sess, _ := s.GetSession(testToken("keeper")); sess == nil {
+		t.Error("another user's session was revoked")
+	}
+
+	// A user with no content deletes cleanly and returns no paths.
+	empty := mustCreateUser(t, s, testUser("u-empty", "empty"))
+	if got, err := s.DeleteUser(empty.ID); err != nil || len(got) != 0 {
+		t.Fatalf("empty user delete = %v, err=%v", got, err)
+	}
+	// And a missing user is sql.ErrNoRows with nothing written.
+	if got, err := s.DeleteUser("no-such-user"); !errors.Is(err, sql.ErrNoRows) || got != nil {
+		t.Fatalf("missing user = %v, err=%v", got, err)
+	}
+}
+
+// TestLastAdminGuard pins the invariant: the database never ends up with no
+// approved administrator, and the guard leaves nothing half-written.
+func TestLastAdminGuard(t *testing.T) {
+	s := openTemp(t)
+	admin := &User{ID: "a1", Username: "admin-one", PasswordHash: "h",
+		Status: StatusApproved, Role: RoleAdmin}
+	mustCreateUser(t, s, admin)
+	plain := mustCreateUser(t, s, testUser("p1", "plain"))
+
+	// The only admin cannot be deleted or disabled.
+	if _, err := s.DeleteUser(admin.ID); !errors.Is(err, ErrLastAdmin) {
+		t.Fatalf("delete last admin = %v, want ErrLastAdmin", err)
+	}
+	if err := s.UpdateUserStatus(admin.ID, StatusDisabled); !errors.Is(err, ErrLastAdmin) {
+		t.Fatalf("disable last admin = %v, want ErrLastAdmin", err)
+	}
+	if err := s.UpdateUserStatus(admin.ID, StatusPending); !errors.Is(err, ErrLastAdmin) {
+		t.Fatalf("un-approve last admin = %v, want ErrLastAdmin", err)
+	}
+	got, _ := s.GetUserByID(admin.ID)
+	if got == nil || got.Status != StatusApproved {
+		t.Fatalf("the refusal changed the admin: %#v", got)
+	}
+
+	// Approving them is unaffected — the guard only covers removal.
+	if err := s.UpdateUserStatus(admin.ID, StatusApproved); err != nil {
+		t.Fatalf("approve last admin = %v", err)
+	}
+	// Ordinary users are unaffected.
+	if err := s.UpdateUserStatus(plain.ID, StatusDisabled); err != nil {
+		t.Fatalf("disable ordinary user = %v", err)
+	}
+	if _, err := s.DeleteUser(plain.ID); err != nil {
+		t.Fatalf("delete ordinary user = %v", err)
+	}
+
+	// With a second approved admin, the first becomes removable.
+	second := &User{ID: "a2", Username: "admin-two", PasswordHash: "h",
+		Status: StatusApproved, Role: RoleAdmin}
+	mustCreateUser(t, s, second)
+	if _, err := s.DeleteUser(admin.ID); err != nil {
+		t.Fatalf("delete with a spare admin = %v", err)
+	}
+	// ...and now the second one is protected in turn.
+	if _, err := s.DeleteUser(second.ID); !errors.Is(err, ErrLastAdmin) {
+		t.Fatalf("delete the new last admin = %v, want ErrLastAdmin", err)
+	}
+
+	// A *disabled* admin does not count as cover for removing the live one.
+	third := &User{ID: "a3", Username: "admin-three", PasswordHash: "h",
+		Status: StatusDisabled, Role: RoleAdmin}
+	mustCreateUser(t, s, third)
+	if _, err := s.DeleteUser(second.ID); !errors.Is(err, ErrLastAdmin) {
+		t.Fatalf("a disabled admin was counted as a survivor: %v", err)
+	}
+	// A disabled admin can itself be removed — it is protecting nothing.
+	if _, err := s.DeleteUser(third.ID); err != nil {
+		t.Fatalf("delete a disabled admin = %v", err)
 	}
 }

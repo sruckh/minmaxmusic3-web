@@ -1,0 +1,18 @@
+{{define "admin-actions.html"}}
+<div style="display:inline-flex; gap:6px; align-items:center;">
+  {{if ne .User.Status "approved"}}
+  <button type="button" class="btn btn--ghost btn--sm"
+          hx-post="/admin/users/{{.User.ID}}/approve">Approve</button>
+  {{end}}
+  {{if ne .User.ID .Self}}
+    {{if ne .User.Status "disabled"}}
+    <button type="button" class="btn btn--ghost btn--sm"
+            hx-post="/admin/users/{{.User.ID}}/disable"
+            hx-confirm="Disable {{.User.Username}}? They will be signed out immediately.">Disable</button>
+    {{end}}
+    <button type="button" class="btn btn--ghost btn--sm btn--danger"
+            hx-post="/admin/users/{{.User.ID}}/delete"
+            hx-confirm="Permanently delete {{.User.Username}}, along with all of their songs and audio? This cannot be undone.">Delete</button>
+  {{end}}
+</div>
+{{end}}

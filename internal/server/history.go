@@ -140,9 +140,9 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Could not load the library.", http.StatusInternalServerError)
 		return
 	}
-	s.execute(w, "history.html", map[string]any{
+	s.execute(w, "history.html", s.pageData(r, map[string]any{
 		"Page": "history", "Personal": personal, "Public": public,
-	})
+	}))
 }
 
 // handleHistoryPersonal is the htmx fragment for the caller's own songs. It is
@@ -186,9 +186,9 @@ func (s *Server) handleSongDetail(w http.ResponseWriter, r *http.Request) {
 	// CanEdit drives the owner-only controls. It is presentation only — every
 	// mutating endpoint re-derives ownership in its own SQL, so hiding a
 	// control is never what stops a non-owner.
-	s.execute(w, "song.html", map[string]any{
+	s.execute(w, "song.html", s.pageData(r, map[string]any{
 		"Page": "history", "Song": g, "CanEdit": s.owns(r, g),
-	})
+	}))
 }
 
 // owns reports whether the caller may mutate this song.
