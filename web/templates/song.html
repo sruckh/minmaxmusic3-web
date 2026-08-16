@@ -25,12 +25,15 @@
         <audio controls preload="metadata" src="/audio/{{.Song.ID}}"></audio>
         <div style="display:flex;gap:.75rem;margin-top:.75rem;flex-wrap:wrap">
           <a class="btn btn--secondary" href="/audio/{{.Song.ID}}" download>Download M4A</a>
+          {{if .CanEdit}}
           <button type="button" class="btn btn--ghost" hx-post="/songs/{{.Song.ID}}/regenerate"
             hx-target="#job" hx-swap="innerHTML">Generate again with this seed</button>
           <button type="button" class="btn btn--ghost btn--danger"
             hx-delete="/songs/{{.Song.ID}}?redirect=/history"
             hx-confirm="Are you sure you want to delete this song?">Delete song</button>
+          {{end}}
         </div>
+        <div style="margin-top:.75rem">{{template "share-toggle.html" .}}</div>
       </div>
     </div>
 

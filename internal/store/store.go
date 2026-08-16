@@ -571,6 +571,30 @@ func (s *Store) DeleteSong(id string, a Access) (*Song, error) {
 	return g, nil
 }
 
+// SetSongPublic shares or unshares a song the caller owns, returning the row
+// as it now stands (or nil if there is no such song of theirs).
+//
+// It takes the target state rather than flipping, and it is a single
+// statement: there is no read-then-check-then-write for a concurrent request
+// to interleave with, and no lost update when two clients act at once. Two
+// callers both sharing a song both succeed and the outcome is unambiguous.
+// Ownership is in the WHERE clause, so a non-owner updates nothing and gets
+// the same answer as for a song that does not exist.
+func (s *Store) SetSongPublic(id string, public bool, a Access) (*Song, error) {
+	var g Song
+	err := scanSong(s.db.QueryRow(
+		`UPDATE songs SET is_public = ? WHERE id = ? AND `+ownedBy+
+			` RETURNING `+songCols,
+		append([]any{public, id}, a.args()...)...), &g)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &g, nil
+}
+
 // UpdateSongTitle renames a song the caller owns. Renaming someone else's is
 // reported as sql.ErrNoRows — the same answer as a song that does not exist.
 func (s *Store) UpdateSongTitle(id, title string, a Access) error {

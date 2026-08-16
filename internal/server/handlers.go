@@ -32,6 +32,7 @@ func (s *Server) registerFeatures(rt *router) {
 	rt.handleFunc("POST /songs/{id}/regenerate", s.handleRegenerate)
 	rt.handleFunc("DELETE /songs/{id}", s.handleDeleteSong)
 	rt.handleFunc("POST /songs/{id}/title", s.handleUpdateSongTitle)
+	rt.handleFunc("POST /songs/{id}/toggle-public", s.handleToggleSongPublic)
 }
 
 // handleAssistant proxies the LLM and returns the parsed draft as JSON for
