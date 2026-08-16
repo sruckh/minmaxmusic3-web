@@ -1,18 +1,20 @@
 {{define "share-toggle.html"}}
 <span id="share-{{.Song.ID}}" class="share-toggle">
   {{if .Song.IsPublic}}
-  <span class="badge badge--done"><span class="dot"></span>Shared</span>
+  <span class="badge badge--done"><span class="dot"></span>Publicly Visible</span>
   {{if .CanEdit}}
   <button type="button" class="btn btn--ghost btn--sm"
           hx-post="/songs/{{.Song.ID}}/toggle-public" hx-vals='{"public":"0"}'
-          hx-target="#share-{{.Song.ID}}" hx-swap="outerHTML">Make private</button>
+          hx-target="#share-{{.Song.ID}}" hx-swap="outerHTML"
+          aria-label="Make &#34;{{.Song.Title}}&#34; private">Make Private</button>
   {{end}}
   {{else}}
   <span class="badge"><span class="dot"></span>Private</span>
   {{if .CanEdit}}
   <button type="button" class="btn btn--ghost btn--sm"
           hx-post="/songs/{{.Song.ID}}/toggle-public" hx-vals='{"public":"1"}'
-          hx-target="#share-{{.Song.ID}}" hx-swap="outerHTML">Share</button>
+          hx-target="#share-{{.Song.ID}}" hx-swap="outerHTML"
+          aria-label="Share &#34;{{.Song.Title}}&#34; publicly">Make Public</button>
   {{end}}
   {{end}}
 </span>

@@ -38,13 +38,16 @@
       <a href="/history" {{if eq .Page "history"}}aria-current="page"{{end}}>History</a>
       {{if .User}}{{if .User.IsAdmin}}
       <a href="/admin" {{if eq .Page "admin"}}aria-current="page"{{end}}>Admin{{if gt .User.PendingCount 0}}
-        <span class="nav-badge" aria-label="{{.User.PendingCount}} pending requests">{{.User.PendingCount}}</span>{{end}}</a>
+        <span class="nav-badge">{{.User.PendingCount}} Pending</span>{{end}}</a>
       {{end}}{{end}}
     </nav>
     {{if .User}}
-    <form method="post" action="/logout" style="margin:0">
-      <button type="submit" class="btn btn--ghost btn--sm">Sign out</button>
-    </form>
+    <div class="session-identity">
+      <span class="current-user" title="Signed in as {{.User.Username}}">{{.User.Username}}</span>
+      <form method="post" action="/logout" style="margin:0">
+        <button type="submit" class="btn btn--ghost btn--sm">Log out</button>
+      </form>
+    </div>
     {{end}}
     <button type="button" class="theme-toggle" x-data="{ theme: document.documentElement.getAttribute('data-theme') || 'dark' }"
             @click="theme = (theme === 'dark' ? 'light' : 'dark'); document.documentElement.setAttribute('data-theme', theme); localStorage.setItem('mm3-theme', theme)"

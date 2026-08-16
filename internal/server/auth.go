@@ -54,14 +54,15 @@ const (
 	registerWindow         = time.Hour
 )
 
-// Notices rendered on the login page. They are keys, not free text from the
-// query string, so nothing a caller supplies is ever reflected into the page.
+// Notices rendered on the login page. The wording is fixed by
+// _config/voice.md; they travel as keys, not as free text from the query
+// string, so nothing a caller supplies is ever reflected into the page.
 const (
-	noticeInvalid    = "Incorrect username or password."
-	noticePending    = "Your account is awaiting administrator approval."
-	noticeDisabled   = "This account has been disabled. Contact an administrator."
-	noticeRegistered = "Registration received. An administrator must approve your account before you can sign in."
-	noticeSignedOut  = "You have been signed out."
+	noticeInvalid    = "Invalid username or password. Please try again."
+	noticePending    = "Your account is awaiting approval by an administrator. Please check back later."
+	noticeDisabled   = "This account has been disabled. Please contact the administrator."
+	noticeRegistered = "Account created successfully! Your registration is pending administrator approval before you can log in."
+	noticeSignedOut  = "You have been logged out."
 	noticeSignIn     = "Please sign in to continue."
 )
 

@@ -113,7 +113,7 @@ func TestAdminDashboardListsUsers(t *testing.T) {
 	body := res.Body.String()
 	for _, want := range []string{
 		"waiting-one", "waiting-two", "active-one", "banned-one", "boss",
-		"Pending requests", "All accounts", "approved", "disabled",
+		"Pending Registration Requests", "All Accounts", "approved", "disabled",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("dashboard missing %q", want)
@@ -124,7 +124,7 @@ func TestAdminDashboardListsUsers(t *testing.T) {
 		t.Error("the dashboard rendered a password hash")
 	}
 	// The pending section comes before the full list.
-	if strings.Index(body, "Pending requests") > strings.Index(body, "All accounts") {
+	if strings.Index(body, "Pending Registration Requests") > strings.Index(body, "All Accounts") {
 		t.Error("pending requests are not shown first")
 	}
 }
@@ -152,8 +152,8 @@ func TestPendingBadge(t *testing.T) {
 	if !strings.Contains(body, "nav-badge") {
 		t.Error("badge missing with pending accounts")
 	}
-	if !strings.Contains(body, ">3<") {
-		t.Errorf("badge does not show the count 3")
+	if !strings.Contains(body, "3 Pending") {
+		t.Errorf("badge does not read \"3 Pending\"")
 	}
 
 	// A non-admin gets neither the tab nor the count, on any page.
