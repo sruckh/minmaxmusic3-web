@@ -14,7 +14,7 @@ This workspace specifies the multi-user architecture and implementation pipeline
 6. **Admin Power**: Administrators have access to an `/admin` dashboard with a pending request badge, allowing user approval, disable, or deletion.
 
 ## Stack & Environment
-- **Runtime**: Go 1.24+ standard library HTTP server + SQLite database
+- **Runtime**: Go 1.26+ standard library HTTP server + SQLite database
 - **Frontend**: Go `html/template` + HTMX + Alpine.js + Tailwind CSS
 - **Configuration & Secrets**: Infisical Universal Auth machine identity
 - **Authentication**: HTTP-only session cookies with secure server-side session tracking
