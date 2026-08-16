@@ -546,6 +546,21 @@ func TestAcceptanceAccessibilityBasics(t *testing.T) {
 		}
 	}
 
+	// The login form exposes its heading, guidance, and password control state
+	// without coupling this test to the decorative rack-console classes.
+	login := anon.mustGet("/login", 200)
+	for _, want := range []string{
+		`id="login-title"`,
+		`aria-labelledby="login-title"`,
+		`aria-describedby="login-guidance"`,
+		`aria-controls="password"`,
+		`aria-pressed="false"`,
+	} {
+		if !strings.Contains(login, want) {
+			t.Errorf("/login is missing semantic hook %q", want)
+		}
+	}
+
 	// The badge reads as words, not a bare number.
 	board := admin.mustGet("/admin", 200)
 	if !strings.Contains(board, "1 Pending") {
