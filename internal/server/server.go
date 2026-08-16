@@ -30,8 +30,10 @@ type Server struct {
 	llm *llm.Client
 	wk  *worker.Worker
 
-	genLimiter    *limiter
-	assistLimiter *limiter
+	genLimiter      *limiter
+	assistLimiter   *limiter
+	loginLimiter    *limiter
+	registerLimiter *limiter
 }
 
 // New parses templates from <WebDir>/templates. Paths come from config, so
@@ -44,6 +46,11 @@ func New(cfg *config.Config, log *slog.Logger) (*Server, error) {
 	}).ParseGlob(filepath.Join(cfg.WebDir, "templates", "*.html"))
 	if err != nil {
 		return nil, fmt.Errorf("parsing templates: %w", err)
+	}
+	if !cfg.AdminLoginEnabled() {
+		// Loud, and without a fallback: no administrator is safer than a
+		// default one. Registration and the rest of the app still work.
+		log.Warn("administrator login disabled: ADMIN_USER and ADMIN_PASSWORD must both be set")
 	}
 	return &Server{
 		cfg: cfg, log: log, tpl: tpl,
@@ -105,6 +112,7 @@ func (s *Server) Routes() http.Handler {
 		"Bridge", "Instrumental", "Solo", "Outro"}
 	mux.HandleFunc("GET /{$}", s.page("index.html", map[string]any{"Page": "index", "Tags": tags}))
 
+	s.registerAuth(mux)
 	s.registerFeatures(mux)
 
 	static := http.FileServer(http.Dir(filepath.Join(s.cfg.WebDir, "static")))
@@ -122,6 +130,13 @@ func (s *Server) page(name string, data any) http.HandlerFunc {
 }
 
 func (s *Server) execute(w http.ResponseWriter, name string, data any) {
+	s.executeStatus(w, http.StatusOK, name, data)
+}
+
+// executeStatus renders fully into memory, then writes headers and status,
+// then the body — so a template error is still a clean 500 and the status
+// never lands before Content-Type.
+func (s *Server) executeStatus(w http.ResponseWriter, code int, name string, data any) {
 	var buf bytes.Buffer
 	if err := s.tpl.ExecuteTemplate(&buf, name, data); err != nil {
 		s.log.Error("template", "name", name, "err", err)
@@ -129,6 +144,7 @@ func (s *Server) execute(w http.ResponseWriter, name string, data any) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(code)
 	_, _ = buf.WriteTo(w)
 }
 

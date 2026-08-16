@@ -94,6 +94,14 @@ func (u *stubUpstream) handler() http.Handler {
 // newTestEnv boots a Server wired to stub upstreams, with the worker
 // running, and returns its handler and the stubs.
 func newTestEnv(t *testing.T) (http.Handler, *stubUpstream) {
+	h, up, _ := newTestEnvWith(t, nil)
+	return h, up
+}
+
+// newTestEnvWith is newTestEnv plus a hook to adjust the config before the
+// server is built, and it also hands back the Server so a test can reach the
+// store directly. tweak may be nil.
+func newTestEnvWith(t *testing.T, tweak func(*config.Config)) (http.Handler, *stubUpstream, *Server) {
 	t.Helper()
 	up := newStubUpstream()
 	rpSrv := httptest.NewServer(up.handler())
@@ -113,6 +121,9 @@ func newTestEnv(t *testing.T) (http.Handler, *stubUpstream) {
 		RunPodEndpoint: rpSrv.URL, RunPodAPIKey: "test-key",
 		LLMBaseURL: llmSrv.URL, LLMAPIKey: "test-key", LLMModelID: "test-model",
 	}
+	if tweak != nil {
+		tweak(cfg)
+	}
 	s, err := New(cfg, slog.New(slog.NewTextHandler(os.Stderr, nil)))
 	if err != nil {
 		t.Fatal(err)
@@ -127,7 +138,7 @@ func newTestEnv(t *testing.T) (http.Handler, *stubUpstream) {
 	t.Cleanup(cancel)
 	go s.RunWorkers(ctx)
 
-	return s.Routes(), up
+	return s.Routes(), up, s
 }
 
 // waitUntil polls cond until true or the deadline; fails the test on timeout.

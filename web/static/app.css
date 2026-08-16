@@ -1451,3 +1451,45 @@ select {
     }
   }
 }
+
+/* ---- Auth (login / register) ---- */
+.auth-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 26rem;
+  margin-top: calc(var(--unit)*3);
+}
+.auth-form label {
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  margin-top: calc(var(--unit)*1.5);
+}
+.auth-form input {
+  font-family: var(--font-ui);
+  font-size: 0.9375rem;
+  padding: 10px 12px;
+  color: var(--text-primary);
+  background: var(--surface-sunken);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+}
+.auth-form .btn {
+  margin-top: calc(var(--unit)*3);
+}
+.notice {
+  font-family: var(--font-ui);
+  font-size: 0.875rem;
+  line-height: 1.5;
+  max-width: 26rem;
+  margin: calc(var(--unit)*2) 0 0;
+  padding: 10px 14px;
+  color: var(--text-primary);
+  background: var(--surface-sunken);
+  border: 1px solid var(--border-strong);
+  border-left: 3px solid var(--amber, var(--green));
+  border-radius: var(--radius);
+}
