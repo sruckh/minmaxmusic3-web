@@ -1,42 +1,142 @@
 <!doctype html>
 <html lang="en">
 <head>{{template "head" .}}</head>
-<body>
-<div class="shell">
+<body class="auth-page">
+<div class="shell auth-shell">
   {{template "nav" .}}
-  <main class="session">
-    <div class="session-head">
-      <div style="display:flex; align-items:center; gap:12px;">
-        <span class="eyebrow"><span class="dot" style="background:var(--green)"></span>ACCESS</span>
-        <h1 style="font-family:var(--font-display); font-size:1.2rem; font-weight:500; margin:0">Request access</h1>
+
+  <main class="auth-console" aria-labelledby="register-title">
+    <section class="auth-module auth-module--credentials">
+      <header class="auth-module__head">
+        <div>
+          <span class="eyebrow"><span class="dot"></span>ACCOUNT PROVISION / CH.02</span>
+          <h1 id="register-title" class="auth-title">Request access</h1>
+        </div>
+        <span class="auth-module__index" aria-hidden="true">02</span>
+      </header>
+
+      <p id="register-guidance" class="auth-lede">
+        Submit your details to request an account. An administrator approves new accounts before first sign-in.
+      </p>
+
+      {{if .Notice}}
+      <div id="register-notice" class="auth-notice" role="status" aria-live="polite">
+        <span class="auth-notice__label">NOTICE</span>
+        <p>{{.Notice}}</p>
       </div>
-    </div>
+      {{end}}
 
-    {{if .Notice}}<p class="notice" role="status">{{.Notice}}</p>{{end}}
+      <form id="register-form" method="post" action="/register" class="auth-form"
+            aria-describedby="register-guidance{{if .Notice}} register-notice{{end}}"
+            x-data="{ showPassword: false, showConfirm: false }">
 
-    <form method="post" action="/register" class="auth-form">
-      <label for="username">Username</label>
-      <input id="username" name="username" type="text" autocomplete="username"
-             minlength="3" maxlength="64" value="{{.Username}}" required autofocus>
+        <div class="auth-field">
+          <label class="field-label" for="username">
+            <span class="auth-field__channel">01</span>
+            Username
+          </label>
+          <div class="auth-input-frame">
+            <span class="auth-input-frame__lead" aria-hidden="true">@</span>
+            <input class="auth-input" id="username" name="username" type="text"
+                   autocomplete="username" autocapitalize="none" spellcheck="false"
+                   minlength="3" maxlength="64"
+                   value="{{.Username}}" required autofocus>
+          </div>
+        </div>
 
-      <label for="password">Password</label>
-      <input id="password" name="password" type="password"
-             autocomplete="new-password" minlength="8" maxlength="72" required>
+        <div class="auth-field">
+          <label class="field-label" for="password">
+            <span class="auth-field__channel">02</span>
+            Password
+          </label>
+          <div class="auth-input-frame auth-input-frame--action">
+            <input class="auth-input" id="password" name="password" type="password"
+                   x-bind:type="showPassword ? 'text' : 'password'"
+                   autocomplete="new-password" minlength="8" maxlength="72" required>
+            <button type="button" class="auth-reveal" aria-controls="password"
+                    aria-pressed="false"
+                    x-bind:aria-pressed="showPassword ? 'true' : 'false'"
+                    x-bind:aria-label="showPassword ? 'Hide password' : 'Show password'"
+                    @click="showPassword = !showPassword">
+              <span x-text="showPassword ? 'HIDE' : 'SHOW'">SHOW</span>
+            </button>
+          </div>
+        </div>
 
-      <label for="confirm_password">Confirm password</label>
-      <input id="confirm_password" name="confirm_password" type="password"
-             autocomplete="new-password" minlength="8" maxlength="72" required>
+        <div class="auth-field">
+          <label class="field-label" for="confirm_password">
+            <span class="auth-field__channel">03</span>
+            Confirm password
+          </label>
+          <div class="auth-input-frame auth-input-frame--action">
+            <input class="auth-input" id="confirm_password" name="confirm_password" type="password"
+                   x-bind:type="showConfirm ? 'text' : 'password'"
+                   autocomplete="new-password" minlength="8" maxlength="72" required>
+            <button type="button" class="auth-reveal" aria-controls="confirm_password"
+                    aria-pressed="false"
+                    x-bind:aria-pressed="showConfirm ? 'true' : 'false'"
+                    x-bind:aria-label="showConfirm ? 'Hide password' : 'Show password'"
+                    @click="showConfirm = !showConfirm">
+              <span x-text="showConfirm ? 'HIDE' : 'SHOW'">SHOW</span>
+            </button>
+          </div>
+        </div>
 
-      <button class="btn" type="submit">Request access</button>
-    </form>
+        <button class="btn auth-submit" type="submit">
+          <span>Request access</span>
+          <span class="auth-submit__glyph" aria-hidden="true">&#8594;</span>
+        </button>
+      </form>
 
-    <p class="footer-note">
-      Accounts start as pending. An administrator must approve yours before you
-      can sign in. Already have one? <a href="/login">Sign in</a>.
-    </p>
+      <div class="auth-access-note">
+        <span class="auth-access-note__label">ACCOUNT STATUS</span>
+        <p>
+          Already have an account? <a href="/login">Sign in</a>. An administrator
+          approves new accounts before first sign-in.
+        </p>
+      </div>
+    </section>
+
+    <aside class="auth-module auth-module--signal" aria-labelledby="access-monitor-title">
+      <header class="auth-module__head">
+        <div>
+          <span class="eyebrow"><span class="dot"></span>ACCESS BUS / MONITOR</span>
+          <h2 id="access-monitor-title" class="auth-signal-title">Registration</h2>
+        </div>
+        <span class="auth-module__index" aria-hidden="true">B</span>
+      </header>
+
+      <div class="auth-meter" aria-hidden="true">
+        <span></span><span></span><span></span><span></span><span></span>
+        <span></span><span></span><span></span><span></span><span></span>
+        <span></span><span></span><span></span><span></span><span></span>
+      </div>
+
+      <dl class="auth-status-grid">
+        <div>
+          <dt>Gate</dt>
+          <dd><span class="auth-status-dot auth-status-dot--green"></span>Admin approval</dd>
+        </div>
+        <div>
+          <dt>Status</dt>
+          <dd><span class="auth-status-dot auth-status-dot--violet"></span>Pending review</dd>
+        </div>
+        <div>
+          <dt>Storage</dt>
+          <dd><span class="auth-status-dot auth-status-dot--crimson"></span>Isolated space</dd>
+        </div>
+      </dl>
+
+      <p class="auth-privacy">
+        Songs are stored on this server and stay private until you choose to share them.
+      </p>
+    </aside>
+
+    <footer class="auth-console__footer">
+      <span>MM3 / ACCESS PANEL</span>
+      <span>MiniMax Music 3 Console</span>
+    </footer>
   </main>
-
-  <p class="footer-note">MM3 — songs are stored on this server and stay private until you share them</p>
 </div>
 </body>
 </html>

@@ -546,7 +546,7 @@ func TestAcceptanceAccessibilityBasics(t *testing.T) {
 		}
 	}
 
-	// The login form exposes its heading, guidance, and password control state
+	// The login and register forms expose their headings, guidance, and password control state
 	// without coupling this test to the decorative rack-console classes.
 	login := anon.mustGet("/login", 200)
 	for _, want := range []string{
@@ -558,6 +558,20 @@ func TestAcceptanceAccessibilityBasics(t *testing.T) {
 	} {
 		if !strings.Contains(login, want) {
 			t.Errorf("/login is missing semantic hook %q", want)
+		}
+	}
+
+	register := anon.mustGet("/register", 200)
+	for _, want := range []string{
+		`id="register-title"`,
+		`aria-labelledby="register-title"`,
+		`aria-describedby="register-guidance"`,
+		`aria-controls="password"`,
+		`aria-controls="confirm_password"`,
+		`aria-pressed="false"`,
+	} {
+		if !strings.Contains(register, want) {
+			t.Errorf("/register is missing semantic hook %q", want)
 		}
 	}
 
