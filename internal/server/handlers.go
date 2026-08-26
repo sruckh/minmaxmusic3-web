@@ -31,7 +31,6 @@ func (s *Server) registerFeatures(rt *router) {
 	rt.handleFunc("GET /history/personal", s.handleHistoryPersonal)
 	rt.handleFunc("GET /history/public", s.handleHistoryPublic)
 	rt.handleFunc("GET /songs/{id}", s.handleSongDetail)
-	rt.handleFunc("POST /songs/{id}/regenerate", s.handleRegenerate)
 	rt.handleFunc("DELETE /songs/{id}", s.handleDeleteSong)
 	rt.handleFunc("POST /songs/{id}/title", s.handleUpdateSongTitle)
 	rt.handleFunc("POST /songs/{id}/toggle-public", s.handleToggleSongPublic)
@@ -71,9 +70,15 @@ func (s *Server) assistantError(w http.ResponseWriter, err error) {
 type jobForm struct {
 	Lyrics   string
 	Caption  string
+	Title    string
 	Duration float64
 	Seed     *int64
 }
+
+// maxTitle bounds a song title. Naming is optional, so this is only here to
+// keep a pasted essay out of the history list; the worker's caption-derived
+// fallback truncates at 60, and a deliberate title is allowed more room.
+const maxTitle = 120
 
 // handleCreateJob validates the form and enqueues a job; returns the job
 // fragment (htmx swap) in well under a second — no RunPod in this path.
@@ -89,6 +94,7 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	var f jobForm
 	f.Lyrics = strings.TrimSpace(r.FormValue("input"))
 	f.Caption = strings.TrimSpace(r.FormValue("instructions"))
+	f.Title = strings.TrimSpace(r.FormValue("title"))
 	f.Duration = 30
 	if v := r.FormValue("audio_duration"); v != "" {
 		if d, err := strconv.ParseFloat(v, 64); err == nil {
@@ -109,7 +115,7 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	j := &store.Job{
 		ID: worker.NewJobID(), State: store.StateQueued,
 		UserID: s.caller(r).UserID,
-		Lyrics: f.Lyrics, Caption: f.Caption,
+		Lyrics: f.Lyrics, Caption: f.Caption, Title: f.Title,
 		Duration: f.Duration, Seed: f.Seed, CreatedAt: time.Now().UTC(),
 	}
 	if err := s.st.CreateJob(j); err != nil {
@@ -132,6 +138,11 @@ func validate(f jobForm) string {
 	}
 	if f.Duration < 10 || f.Duration > 300 {
 		return "Pick a length between 10 and 300 seconds."
+	}
+	// A title is optional — left blank, the song is filed under a name taken
+	// from the caption, the way every song was before this field existed.
+	if len([]rune(f.Title)) > maxTitle {
+		return "That title is too long — keep it under 120 characters."
 	}
 	if len(f.Caption) > 20000 { // ~5,000-token advisory, hard stop far above
 		return "That caption is too long for the model — trim it."

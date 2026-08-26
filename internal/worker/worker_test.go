@@ -83,3 +83,27 @@ func TestBackoffLeavesRoomForManyAttemptsInsideTheQueueBudget(t *testing.T) {
 			attempts, queueBudget)
 	}
 }
+
+// TestTitleOfPrefersTheUserTitle: naming a song on the generate form is the
+// whole point of the field, so a title on the job wins over the caption. The
+// derived fallback still covers jobs submitted without one — including every
+// job that predates the field.
+func TestTitleOfPrefersTheUserTitle(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		job   store.Job
+		title string
+	}{
+		{"user title wins", store.Job{Title: "Midnight Drive", Caption: "acoustic pop"}, "Midnight Drive"},
+		{"blank falls back to the caption", store.Job{Caption: "acoustic pop\nsoft vocals"}, "acoustic pop"},
+		{"whitespace is not a title", store.Job{Title: "   ", Caption: "acoustic pop"}, "acoustic pop"},
+		{"title is trimmed", store.Job{Title: "  Midnight Drive  "}, "Midnight Drive"},
+		{"nothing at all", store.Job{}, "Untitled"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := titleOf(&tc.job); got != tc.title {
+				t.Errorf("titleOf = %q, want %q", got, tc.title)
+			}
+		})
+	}
+}

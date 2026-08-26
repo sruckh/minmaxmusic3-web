@@ -26,8 +26,7 @@
         <div style="display:flex;gap:.75rem;margin-top:.75rem;flex-wrap:wrap">
           <a class="btn btn--secondary" href="/audio/{{.Song.ID}}" download>Download M4A</a>
           {{if .CanEdit}}
-          <button type="button" class="btn btn--ghost" hx-post="/songs/{{.Song.ID}}/regenerate"
-            hx-target="#job" hx-swap="innerHTML">Generate again with this seed</button>
+          <button type="button" class="btn btn--ghost" onclick="mm3EditInGenerator()">Edit in generator</button>
           <button type="button" class="btn btn--ghost btn--danger"
             hx-delete="/songs/{{.Song.ID}}?redirect=/history"
             hx-confirm="Are you sure you want to delete this song?">Delete song</button>
@@ -47,10 +46,37 @@
       <pre style="font-family:var(--font-mono); font-size:0.85rem; line-height:1.6; white-space:pre-wrap; color:var(--text-primary); margin-top:8px;">{{.Song.Caption}}</pre>
     </section>
 
-    <div id="job" style="margin-top: calc(var(--unit)*2)"></div>
   </main>
 
   <p class="footer-note">MM3 — songs are stored on this server and stay private until you share them</p>
 </div>
+{{if .CanEdit}}
+<script>
+// "Edit in generator" is a local move: it drops this song into the same per-user
+// draft the generate form restores from, then goes there. Nothing is queued, so
+// the lyrics, caption, length and seed are all still editable before the user
+// commits to a generation — which is the point, since re-running a stored seed
+// unchanged only reproduces the song that is already on this page.
+//
+// html/template renders .Draft as JSON in this script context, so the lyrics are
+// escaped by the template and never string-interpolated into the page.
+const MM3_SONG_DRAFT = {{.Draft}};
+
+function mm3EditInGenerator() {
+  if (mm3DraftIsDirty(mm3ReadDraft()) &&
+      !confirm('The generate page already has a draft on it. Replace it with this song?')) return;
+  // A fresh default draft, not a merge: the fields this song does not carry
+  // (the assistant idea, tempo, key, vocals) should read as untouched.
+  const d = mm3Defaults();
+  d.title = MM3_SONG_DRAFT.title;
+  d.lyrics = MM3_SONG_DRAFT.lyrics;
+  d.caption = MM3_SONG_DRAFT.caption;
+  d.dur = mm3ClampDur(MM3_SONG_DRAFT.dur);
+  d.seed = MM3_SONG_DRAFT.seed;
+  mm3WriteDraft(d);
+  location.href = '/';
+}
+</script>
+{{end}}
 </body>
 </html>

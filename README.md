@@ -49,14 +49,15 @@ The application is **multi-user and closed by default**: every route except sign
 - **Approval-gated registration**: anyone can request an account at `/register`; the account is created `pending` and cannot sign in until an administrator approves it.
 - **Default-deny routing**: the whole HTTP mux is wrapped in the access middleware, so a route is authenticated-only unless its pattern is on an explicit public allowlist.
 - **Partitioned library**: `/history` shows *My Songs* (yours alone, even for an administrator) beside *Community Songs* (everything explicitly shared), each paged independently.
-- **Explicit sharing**: songs are `is_public = 0` on creation. Sharing grants reading, never writing — only the owner (or an administrator) can rename, un-share, regenerate, or delete.
+- **Explicit sharing**: songs are `is_public = 0` on creation. Sharing grants reading, never writing — only the owner (or an administrator) can rename, un-share, rework, or delete.
 - **Admin dashboard** at `/admin`: approve, disable, or delete accounts, with a pending-request badge in the nav. Disabling revokes live sessions in the same transaction; deleting removes the account's sessions, jobs, songs, and audio files.
 - **Session hardening**: session tokens are stored only as SHA-256; privilege and account status are resolved from the `users` table on every request, so a disable or delete takes effect on the very next request rather than at cookie expiry.
 
 ### 💾 Song Library & Playback
 - **SQLite Database**: Persists job states and song metadata in `/data/mm3.db` using WAL mode.
 - **Local Timezone Display**: Creation timestamps automatically format in the user's local browser timezone.
-- **Playback & Management**: Dedicated song playback page with audio player, lyrics display, style caption, seed replay, inline title editing, and deletion.
+- **Named by you**: give a song a title on the generate form; leave it blank and one is derived from the style caption. Either way it can be renamed in place from the history list.
+- **Playback & Management**: Dedicated song playback page with audio player, lyrics display, style caption, inline title editing, deletion, and — for the owner — *Edit in generator*, which copies the song back into the form to be reworked.
 
 ### 🔒 Secure Deployment
 - **Zero Hardcoded Secrets**: Secrets (`RUNPOD_API_KEY`, `LLM_API_KEY`, `ADMIN_USER`, `ADMIN_PASSWORD`) are injected via Infisical Universal Auth machine identities.
@@ -204,9 +205,8 @@ Access is enforced by one middleware wrapping the entire mux: anything not liste
 | `GET /history` | `GET` | Authenticated | Partitioned library: *My Songs* and *Community Songs*, each paged independently (`?mine=`, `?public=`). |
 | `GET /history/personal` | `GET` | Authenticated | htmx fragment for the caller's own songs (`?page=`). |
 | `GET /history/public` | `GET` | Authenticated | htmx fragment for the community library (`?page=`). |
-| `GET /songs/{id}` | `GET` | Owner / Shared / Admin | Playback detail page with lyrics, caption, seed, and history navigation. |
+| `GET /songs/{id}` | `GET` | Owner / Shared / Admin | Playback detail page with lyrics, caption, seed, history navigation, and — for the owner — *Edit in generator*. |
 | `POST /songs/{id}/toggle-public` | `POST` | Owner / Admin | Set sharing explicitly — send `public=1` or `public=0`. Not a blind flip. |
-| `POST /songs/{id}/regenerate` | `POST` | Owner / Admin | Re-queue generation job using the same inputs and seed. |
 | `POST /songs/{id}/title` | `POST` | Owner / Admin | Update song title from the library. |
 | `DELETE /songs/{id}` | `DELETE` | Owner / Admin | Delete song, purge database records, and remove audio file. |
 | `GET /audio/{id}` | `GET` | Owner / Shared / Admin | Stream or download generated M4A audio file. |

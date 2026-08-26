@@ -657,18 +657,25 @@ func TestAcceptanceGenerateDraftSurvivesNavigation(t *testing.T) {
 	j.token = tok
 	body := j.mustGet("/", 200)
 
+	// The draft itself lives in one shared module, because the song detail page
+	// writes the same draft when it hands a song back to be reworked.
+	draftJS := j.mustGet("/static/draft.js", 200)
+
 	// Namespaced per user, so two accounts on one browser never share a draft.
-	if !strings.Contains(body, `'mm3-draft:drafter'`) {
-		t.Error("generate page does not scope its saved draft to the signed-in user")
+	if !strings.Contains(draftJS, `'mm3-draft:' + (window.MM3_USER`) {
+		t.Error("the draft key is not scoped to the signed-in user")
+	}
+	if !strings.Contains(body, `window.MM3_USER = "drafter"`) {
+		t.Error("generate page does not name the signed-in user its draft belongs to")
 	}
 	// Every field a song is written into is kept, not just the lyrics.
-	for _, f := range []string{"idea", "lyrics", "caption", "dur", "seed", "bpm", "key", "vocals"} {
-		if !strings.Contains(body, `'`+f+`'`) {
+	for _, f := range []string{"idea", "title", "lyrics", "caption", "dur", "seed", "bpm", "key", "vocals"} {
+		if !strings.Contains(draftJS, `'`+f+`'`) {
 			t.Errorf("draft does not persist the %q field", f)
 		}
 	}
 	// Restoring on load and saving on change are what make navigating away safe.
-	for _, hook := range []string{"this.restore()", "$watch", "localStorage.setItem(MM3_DRAFT_KEY"} {
+	for _, hook := range []string{"this.restore()", "$watch", "mm3WriteDraft(d)"} {
 		if !strings.Contains(body, hook) {
 			t.Errorf("generate page is missing %q, so the draft will not survive navigation", hook)
 		}
@@ -686,8 +693,60 @@ func TestAcceptanceGenerateDraftSurvivesNavigation(t *testing.T) {
 
 	// Logging out drops this account's draft from every page carrying the nav.
 	for _, path := range []string{"/", "/history"} {
-		if !strings.Contains(j.mustGet(path, 200), `removeItem('mm3-draft:drafter')`) {
+		if !strings.Contains(j.mustGet(path, 200), `onsubmit="mm3ClearDraft()"`) {
 			t.Errorf("%s: logging out does not drop the saved draft", path)
 		}
+	}
+}
+
+// TestAcceptanceUserNamesTheirSong covers naming a song where it is written
+// rather than renaming it afterwards in History: the generate form offers an
+// optional title, and a song submitted without one is still filed under a
+// readable name.
+func TestAcceptanceUserNamesTheirSong(t *testing.T) {
+	h, _, s := newTestEnvWith(t, nil)
+	useBcryptCost(t, bcrypt.MinCost)
+	_, tok := mkSession(t, s, "namer", store.StatusApproved, store.RoleUser)
+
+	j := newJourney(t, h, "namer")
+	j.token = tok
+	body := j.mustGet("/", 200)
+
+	if !strings.Contains(body, `name="title"`) {
+		t.Error("generate form offers no title field")
+	}
+	// Optional, and said so — the alternative is a user who thinks it is required.
+	if !strings.Contains(body, "optional") {
+		t.Error("the title field does not read as optional")
+	}
+	if !strings.Contains(body, `x-model="title"`) {
+		t.Error("the title is not bound to the draft, so it will not survive navigation")
+	}
+}
+
+// TestAcceptanceSongOpensInGenerator covers reworking a past song: its detail
+// page hands the song to the generate form through that same per-user draft, so
+// the seed, lyrics, caption and length all arrive editable. Re-running a stored
+// seed unchanged only reproduces the song, which is why this replaced the old
+// regenerate-with-the-same-seed button.
+func TestAcceptanceSongOpensInGenerator(t *testing.T) {
+	h, id := completeOneSong(t)
+	body := get(h, "/songs/"+id).Body.String()
+
+	if !strings.Contains(body, `onclick="mm3EditInGenerator()"`) {
+		t.Error("song detail offers no way to open the song in the generator")
+	}
+	// It writes the draft and navigates — nothing is queued behind the user's back.
+	for _, hook := range []string{"mm3WriteDraft(d)", "location.href = '/'"} {
+		if !strings.Contains(body, hook) {
+			t.Errorf("song detail is missing %q", hook)
+		}
+	}
+	// Work already on the generate page is not silently replaced.
+	if !strings.Contains(body, "mm3DraftIsDirty(mm3ReadDraft())") {
+		t.Error("song detail overwrites an existing draft without confirming")
+	}
+	if strings.Contains(body, "/regenerate") {
+		t.Error("song detail still offers the regenerate-with-the-same-seed action")
 	}
 }

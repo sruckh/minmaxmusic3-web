@@ -85,6 +85,10 @@ type Job struct {
 	UserID    string
 	Lyrics    string
 	Caption   string
+	// Title is what the user named the song on the generate form. Empty is
+	// normal and means "no name given" — the worker derives one from the
+	// caption at completion rather than storing a guess here.
+	Title     string
 	Duration  float64
 	Seed      *int64
 	Error     string
@@ -275,6 +279,10 @@ CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
 		// would render CURRENT_TIMESTAMP in a format the driver cannot compare
 		// against a Go time.Time (see the note on migrate).
 		{"jobs", "started_at", `ALTER TABLE jobs ADD COLUMN started_at TIMESTAMP`},
+		// Empty on existing rows, which is the same as "the user named
+		// nothing" — those jobs fall to the caption-derived title they
+		// already have.
+		{"jobs", "title", `ALTER TABLE jobs ADD COLUMN title TEXT NOT NULL DEFAULT ''`},
 	} {
 		has, err := s.hasColumn(c.table, c.col)
 		if err != nil {
@@ -310,9 +318,9 @@ func (s *Store) hasColumn(table, col string) (bool, error) {
 // CreateJob inserts a queued job owned by j.UserID (legacy when unset).
 func (s *Store) CreateJob(j *Job) error {
 	_, err := s.db.Exec(
-		`INSERT INTO jobs (id, state, user_id, lyrics, caption, duration_s, seed, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		j.ID, StateQueued, owner(j.UserID), j.Lyrics, j.Caption, j.Duration, j.Seed,
+		`INSERT INTO jobs (id, state, user_id, lyrics, caption, title, duration_s, seed, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		j.ID, StateQueued, owner(j.UserID), j.Lyrics, j.Caption, j.Title, j.Duration, j.Seed,
 		j.CreatedAt.UTC(), j.CreatedAt.UTC())
 	return err
 }
@@ -365,7 +373,7 @@ func (s *Store) FailJob(id, reason string) error {
 	return nil
 }
 
-const jobCols = `id, state, runpod_id, user_id, lyrics, caption, duration_s,
+const jobCols = `id, state, runpod_id, user_id, lyrics, caption, title, duration_s,
 	seed, error, retries, created_at, started_at, updated_at`
 
 func scanJob(sc interface{ Scan(...any) error }, j *Job) error {
@@ -373,7 +381,7 @@ func scanJob(sc interface{ Scan(...any) error }, j *Job) error {
 	// straight into a time.Time.
 	var started sql.NullTime
 	if err := sc.Scan(&j.ID, &j.State, &j.RunPodID, &j.UserID, &j.Lyrics, &j.Caption,
-		&j.Duration, &j.Seed, &j.Error, &j.Retries, &j.CreatedAt, &started,
+		&j.Title, &j.Duration, &j.Seed, &j.Error, &j.Retries, &j.CreatedAt, &started,
 		&j.UpdatedAt); err != nil {
 		return err
 	}

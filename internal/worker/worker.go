@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/sruckh/minmaxmusic3-web/internal/audio"
@@ -417,7 +418,13 @@ func (w *Worker) fetch(ctx context.Context, url string) ([]byte, error) {
 	return io.ReadAll(io.LimitReader(resp.Body, 64<<20))
 }
 
+// titleOf is what the song is filed under in History. The user's own title
+// wins; the caption-derived fallback is only for jobs submitted without one,
+// which includes every job predating the title field.
 func titleOf(j *store.Job) string {
+	if t := strings.TrimSpace(j.Title); t != "" {
+		return t
+	}
 	for _, line := range splitLines(j.Caption) {
 		if len(line) > 60 {
 			line = line[:60]

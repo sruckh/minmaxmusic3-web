@@ -46,7 +46,15 @@
         </div>
 
         <div class="accordion-body" x-show="openLyrics" x-transition>
+          <!-- Optional: left blank, History files the song under a name taken
+               from the style caption, and it can still be renamed there. -->
           <div class="field-group" style="margin-top:12px;">
+            <label for="title" class="field-label">Song Title <span style="opacity:.6; font-weight:400">— optional</span></label>
+            <input type="text" id="title" name="title" class="input" x-model="title"
+              maxlength="120" placeholder="Name it, or leave blank and we'll pick one">
+          </div>
+
+          <div class="field-group">
             <label for="input" class="field-label">Lyrics Prompt</label>
             <textarea id="input" name="input" rows="12" class="input-lyrics" x-model="lyrics"
               placeholder="[Intro]&#10;Morning light filtering through the pine&#10;&#10;[Chorus]&#10;Softly the world begins to breathe"></textarea>
@@ -188,17 +196,9 @@ function insertTag(btn) {
   ta.focus();
 }
 
-// The generate form is a scratchpad a song is written in, not a fill-and-submit
-// form, so it survives leaving the page for History and coming back. The draft
-// is scoped per user and dropped on logout (see layout.html), so a shared
-// browser never hands one account's lyrics to the next.
-const MM3_DRAFT_KEY = 'mm3-draft:{{if .User}}{{.User.Username}}{{end}}';
-const MM3_DRAFT_FIELDS = ['idea', 'lyrics', 'caption', 'dur', 'seed', 'bpm', 'key', 'vocals'];
-
-function mm3Defaults() {
-  return { idea: '', lyrics: '', caption: '', dur: 30, seed: null, bpm: 96, key: 'C Major', vocals: true };
-}
-
+// The draft this form saves to and restores from is defined in
+// /static/draft.js, because a song's detail page writes the same draft when it
+// hands a song back here to be reworked.
 function mm3Page() {
   return {
     ...mm3Defaults(),
@@ -213,29 +213,24 @@ function mm3Page() {
 
     // True when anything on the form differs from a fresh page.
     get dirty() {
-      const d = mm3Defaults();
-      return MM3_DRAFT_FIELDS.some(f => this[f] !== d[f]);
+      return mm3DraftIsDirty(this);
     },
 
     restore() {
-      let saved = null;
-      try { saved = JSON.parse(localStorage.getItem(MM3_DRAFT_KEY)); } catch { return; }
-      if (!saved || typeof saved !== 'object') return;
+      const saved = mm3ReadDraft();
+      if (!saved) return;
       MM3_DRAFT_FIELDS.forEach(f => { if (saved[f] !== undefined) this[f] = saved[f]; });
-      // The slider and stepper both read dur, so it has to land in range.
-      this.dur = Math.min(300, Math.max(15, parseInt(this.dur, 10) || 30));
+      this.dur = mm3ClampDur(this.dur);
     },
 
     // Debounced: lyrics fire a watch per keystroke.
     save() {
       clearTimeout(this.saveTimer);
       this.saveTimer = setTimeout(() => {
-        try {
-          if (!this.dirty) { localStorage.removeItem(MM3_DRAFT_KEY); return; }
-          const d = {};
-          MM3_DRAFT_FIELDS.forEach(f => d[f] = this[f]);
-          localStorage.setItem(MM3_DRAFT_KEY, JSON.stringify(d));
-        } catch { /* private mode or quota — the form still works */ }
+        if (!this.dirty) { mm3ClearDraft(); return; }
+        const d = {};
+        MM3_DRAFT_FIELDS.forEach(f => d[f] = this[f]);
+        mm3WriteDraft(d);
       }, 250);
     },
 
@@ -243,7 +238,7 @@ function mm3Page() {
       if (this.dirty && !confirm('Clear the lyrics, style caption and settings on this page?')) return;
       Object.assign(this, mm3Defaults());
       this.error = '';
-      try { localStorage.removeItem(MM3_DRAFT_KEY); } catch { /* nothing to drop */ }
+      mm3ClearDraft();
     },
 
     formatDur(sec) {
@@ -270,7 +265,7 @@ function mm3Page() {
         const d = await res.json();
         this.lyrics = d.input;
         this.caption = d.instructions;
-        if (d.audio_duration) this.dur = Math.min(300, Math.max(15, d.audio_duration));
+        if (d.audio_duration) this.dur = mm3ClampDur(d.audio_duration);
         if (d.seed != null) this.seed = d.seed;
         this.showAssistant = false;
       } catch { this.error = 'Network problem — try again.'; }

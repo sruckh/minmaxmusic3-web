@@ -8,10 +8,8 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/sruckh/minmaxmusic3-web/internal/store"
-	"github.com/sruckh/minmaxmusic3-web/internal/worker"
 )
 
 const pageSize = 20
@@ -186,9 +184,25 @@ func (s *Server) handleSongDetail(w http.ResponseWriter, r *http.Request) {
 	// CanEdit drives the owner-only controls. It is presentation only — every
 	// mutating endpoint re-derives ownership in its own SQL, so hiding a
 	// control is never what stops a non-owner.
-	s.execute(w, "song.html", s.pageData(r, map[string]any{
-		"Page": "history", "Song": g, "CanEdit": s.owns(r, g),
-	}))
+	canEdit := s.owns(r, g)
+	data := map[string]any{"Page": "history", "Song": g, "CanEdit": canEdit}
+	if canEdit {
+		data["Draft"] = songDraft(g)
+	}
+	s.execute(w, "song.html", s.pageData(r, data))
+}
+
+// songDraft reduces a song to the fields the generate form can take back, for
+// the "Edit in generator" control. Only the owner may rework a song, so it is
+// rendered only for them; the template emits it as JSON.
+func songDraft(g *store.Song) map[string]any {
+	return map[string]any{
+		"title":   g.Title,
+		"lyrics":  g.Lyrics,
+		"caption": g.Caption,
+		"dur":     int(g.Duration),
+		"seed":    g.Seed,
+	}
 }
 
 // owns reports whether the caller may mutate this song.
@@ -250,34 +264,6 @@ func parseBoolField(v string) (value, ok bool) {
 		return false, true
 	}
 	return false, false
-}
-
-// handleRegenerate re-submits a past song's exact inputs (same seed).
-func (s *Server) handleRegenerate(w http.ResponseWriter, r *http.Request) {
-	if !s.genAllowed(w, r, s.genLimiter, "generation") {
-		return
-	}
-	g, err := s.st.Song(r.PathValue("id"), s.caller(r))
-	if err != nil {
-		s.log.Error("regenerate lookup", "err", err)
-		http.Error(w, "Could not load that song.", http.StatusInternalServerError)
-		return
-	}
-	if g == nil {
-		http.NotFound(w, r)
-		return
-	}
-	j := &store.Job{
-		ID: worker.NewJobID(), State: store.StateQueued,
-		UserID: s.caller(r).UserID,
-		Lyrics: g.Lyrics, Caption: g.Caption,
-		Duration: g.Duration, Seed: g.Seed, CreatedAt: time.Now().UTC(),
-	}
-	if err := s.st.CreateJob(j); err != nil {
-		s.renderJobError(w, http.StatusInternalServerError, "Could not queue the job — try again.")
-		return
-	}
-	s.renderJob(w, j)
 }
 
 // handleDeleteSong removes a song and its audio file on disk, returning 200 for HTMX row removal.

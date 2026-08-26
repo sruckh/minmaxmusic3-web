@@ -325,6 +325,12 @@ CREATE TABLE songs (
 	if j.UserID != LegacyUserID {
 		t.Fatalf("legacy job user_id = %q, want %q", j.UserID, LegacyUserID)
 	}
+	// The legacy table has no title column at all. It migrates to the empty
+	// title, which is what the worker reads as "the user named nothing" — so
+	// an old job finishing after an upgrade still gets a caption title.
+	if j.Title != "" {
+		t.Fatalf("legacy job title = %q, want empty", j.Title)
+	}
 }
 
 func TestUsernameUniquenessIsCaseInsensitive(t *testing.T) {
