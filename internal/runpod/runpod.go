@@ -36,6 +36,9 @@ const maxErrorBody = 2 << 10
 var (
 	ErrNoEndpoint = errors.New("runpod: no endpoint configured (set RUNPOD_ENDPOINT)")
 	ErrNoAPIKey   = errors.New("runpod: no API key configured (set RUNPOD_API_KEY)")
+	// ErrNoJobID is a well-formed 2xx from /run that carried no job id.
+	// RunPod answered and enqueued nothing, so no remote job exists.
+	ErrNoJobID = errors.New("runpod: /run returned no job id")
 )
 
 // Error is a non-2xx response from RunPod.
@@ -70,6 +73,30 @@ type DecodeError struct {
 
 func (e *DecodeError) Error() string { return fmt.Sprintf("runpod: decode %s: %v", e.Path, e.Err) }
 func (e *DecodeError) Unwrap() error { return e.Err }
+
+// IsRetryableSubmit reports whether a failed POST /run may be retried without
+// risking a second billable generation.
+//
+// The bar is deliberately higher than !IsPermanent. A transport error — a
+// timeout, a reset connection — leaves it unknown whether RunPod received and
+// enqueued the request, so those stay ambiguous and are never resubmitted
+// (stage 02 §C). Only a complete answer meaning "not accepted" qualifies: 429
+// while the endpoint rate-limits, 503 while it refuses work outright, and a
+// 2xx that carried no job id.
+func IsRetryableSubmit(err error) bool {
+	if errors.Is(err, ErrNoJobID) {
+		return true
+	}
+	var apiErr *Error
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	switch apiErr.StatusCode {
+	case http.StatusTooManyRequests, http.StatusServiceUnavailable:
+		return true
+	}
+	return false
+}
 
 // IsPermanent classifies an error for the worker's retry decision.
 func IsPermanent(err error) bool {
@@ -199,8 +226,13 @@ func (c *Client) Submit(ctx context.Context, req *Request) (string, error) {
 		return "", err
 	}
 	var sr submitResponse
-	if err := json.Unmarshal(raw, &sr); err != nil || sr.ID == "" {
+	if err := json.Unmarshal(raw, &sr); err != nil {
 		return "", &DecodeError{Path: "/run", Err: err}
+	}
+	if sr.ID == "" {
+		// Deliberately not a DecodeError: the body parsed fine, and unlike a
+		// malformed response this one is safe to retry.
+		return "", ErrNoJobID
 	}
 	return sr.ID, nil
 }

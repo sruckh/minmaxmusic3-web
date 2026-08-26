@@ -224,3 +224,36 @@ func jobIDFrom(t *testing.T, res *httptest.ResponseRecorder) string {
 	end := strings.IndexByte(rest, '"')
 	return rest[:end]
 }
+
+// RunPod GPU availability is unreliable, and scarcity shows up as the endpoint
+// refusing work outright. That is a wait, not a failed song: the job keeps its
+// place until the queue budget runs out, instead of telling the user it didn't
+// work seconds after they asked.
+func TestCapacityRefusalKeepsTheJobQueued(t *testing.T) {
+	h, up := newTestEnv(t)
+	up.mu.Lock()
+	up.runStatus = http.StatusServiceUnavailable // no workers free
+	up.mu.Unlock()
+
+	res := postForm(h, "/jobs", url.Values{
+		"input": {"la"}, "instructions": {"pop"}, "audio_duration": {"30"},
+	})
+	jobID := jobIDFrom(t, res)
+	waitUntil(t, 8*time.Second, func() bool {
+		up.mu.Lock()
+		defer up.mu.Unlock()
+		return up.RunCalls >= 1
+	}, "worker to attempt the submission")
+
+	time.Sleep(4 * time.Second)
+	if body := get(h, "/jobs/"+jobID).Body.String(); strings.Contains(body, "didn't work") {
+		t.Fatal("a capacity refusal failed the job instead of waiting for a GPU")
+	}
+	up.mu.Lock()
+	calls := up.RunCalls
+	up.mu.Unlock()
+	if calls != 1 {
+		t.Errorf("submission attempted %d times inside the first backoff window; "+
+			"retries are not being spaced and will hammer a busy endpoint", calls)
+	}
+}

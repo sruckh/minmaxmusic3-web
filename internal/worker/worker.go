@@ -24,12 +24,58 @@ import (
 )
 
 const (
-	submitTick   = 2 * time.Second
-	pollFast     = 3 * time.Second // first minute
-	pollSlow     = 10 * time.Second
-	pollBudget   = 15 * time.Minute // stage 02: give up
-	maxTransient = 3                // consecutive transient failures
+	submitTick = 2 * time.Second
+	pollFast   = 3 * time.Second // first minute
+	pollSlow   = 10 * time.Second
+
+	// Two budgets, not one. RunPod GPU availability is unreliable, so a job
+	// can sit in IN_QUEUE for a long stretch through no fault of its own,
+	// while generation itself is quick once a worker picks it up. A single
+	// clock from created_at spent its whole budget on the wait and then killed
+	// the run it had just finished paying for. Waiting is now cheap and
+	// generous; running is tight.
+	queueBudget = 45 * time.Minute // submitting + IN_QUEUE, from created_at
+	runBudget   = 8 * time.Minute  // from the first IN_PROGRESS
+
+	// Backoff for a submission RunPod definitively refused. Doubles per
+	// consecutive rejection; the cap keeps a job checking often enough to
+	// claim capacity soon after it frees up.
+	submitBackoff    = 15 * time.Second
+	maxSubmitBackoff = 2 * time.Minute
+
+	maxTransient = 3 // consecutive transient failures while polling
 )
+
+// expired reports whether a job has outlived the budget that applies to it,
+// and why. Which budget that is turns on whether a GPU ever picked the job
+// up: before the first IN_PROGRESS it is only queueing, after it the job is
+// burning GPU time and a short leash is right.
+func expired(j *store.Job) (bool, string) {
+	if j.StartedAt == nil {
+		return time.Since(j.CreatedAt) > queueBudget,
+			"timeout: no GPU capacity within " + queueBudget.String()
+	}
+	return time.Since(*j.StartedAt) > runBudget,
+		"timeout: generation exceeded " + runBudget.String()
+}
+
+// submitDelay spaces retries of a refused submission: 15s, 30s, 60s, 2m, 2m…
+// There is no attempt cap — queueBudget is the cap. Three tries across six
+// seconds never outlived a GPU shortage. A job that has not been refused yet
+// waits for nothing: retries == 0 is the first attempt, not a retry.
+func submitDelay(retries int) time.Duration {
+	if retries <= 0 {
+		return 0
+	}
+	d := time.Duration(submitBackoff)
+	for range retries - 1 {
+		if d >= maxSubmitBackoff {
+			break
+		}
+		d *= 2
+	}
+	return min(d, maxSubmitBackoff)
+}
 
 // Worker is the background submitter/poller pair.
 type Worker struct {
@@ -88,8 +134,11 @@ func (w *Worker) failExpired(ctx context.Context) {
 		return
 	}
 	for _, j := range jobs {
-		if time.Since(j.UpdatedAt) > pollBudget {
-			w.fail(ctx, j, "timeout")
+		// Same test the poll loop uses, rather than a last-progress heuristic:
+		// with a generous queue budget, wall-clock age is now both accurate and
+		// forgiving enough to survive an ordinary restart.
+		if over, why := expired(j); over {
+			w.fail(ctx, j, why)
 		}
 	}
 }
@@ -114,6 +163,19 @@ func (w *Worker) submitQueued(ctx context.Context) {
 	for _, j := range jobs {
 		if j.RunPodID != "" {
 			continue // idempotent: never resubmit
+		}
+		// Capacity never arrived. Fail here rather than in pollActive: this row
+		// has no runpod_id, so there is nothing remote to cancel.
+		if over, why := expired(j); over {
+			w.log.Warn("worker: queue budget exhausted", "job", j.ID,
+				"waited", time.Since(j.CreatedAt).Round(time.Second),
+				"attempts", j.Retries)
+			w.fail(ctx, j, why)
+			continue
+		}
+		// A refused submission waits out its backoff in `queued`.
+		if time.Since(j.UpdatedAt) < submitDelay(j.Retries) {
+			continue
 		}
 		// Claim locally BEFORE the remote call. A crash after this point
 		// leaves `submitting`, which restart recovery fails as ambiguous
@@ -155,12 +217,17 @@ func (w *Worker) pollActive(ctx context.Context) {
 		return
 	}
 	for _, j := range jobs {
-		if j.RunPodID == "" || time.Since(j.UpdatedAt) < w.pollDelay(j) {
+		if j.RunPodID == "" {
 			continue
 		}
-		if time.Since(j.CreatedAt) > pollBudget {
+		// Budget before cadence: an expired job must not wait out a poll slot
+		// before anyone notices it is over.
+		if over, why := expired(j); over {
 			w.rp.Cancel(ctx, j.RunPodID)
-			w.fail(ctx, j, "timeout")
+			w.fail(ctx, j, why)
+			continue
+		}
+		if time.Since(j.UpdatedAt) < w.pollDelay(j) {
 			continue
 		}
 		sr, err := w.rp.Status(ctx, j.RunPodID)
@@ -195,7 +262,14 @@ func (w *Worker) applyStatus(ctx context.Context, j *store.Job, sr *runpod.Statu
 			func(a map[string]any) { a["retries"] = 0 })
 	case runpod.StatusInProgress:
 		_ = w.st.TransitionJob(j.ID, from, store.StateRunning,
-			func(a map[string]any) { a["retries"] = 0 })
+			func(a map[string]any) {
+				a["retries"] = 0
+				// Stamped once. The run budget measures from the first
+				// IN_PROGRESS, not from the latest poll that saw one.
+				if j.StartedAt == nil {
+					a["started_at"] = time.Now().UTC()
+				}
+			})
 	case runpod.StatusCompleted:
 		out, err := runpod.OutputOf(sr)
 		if err != nil {
@@ -227,17 +301,18 @@ func (w *Worker) applyStatus(ctx context.Context, j *store.Job, sr *runpod.Statu
 // the job. Retrying could bill twice, so only an explicit 429 is retried; all
 // other errors fail the locally-claimed submission without resubmission.
 func (w *Worker) classifySubmit(j *store.Job, err error) {
-	var apiErr *runpod.Error
-	if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusTooManyRequests {
-		n, berr := w.st.BumpRetries(j.ID)
-		if berr != nil {
+	// Retryable here means RunPod definitively enqueued nothing, so returning
+	// the row to `queued` cannot produce a duplicate billable generation.
+	// Everything else — including any transport error, where it is unknowable
+	// whether the POST landed — still fails as ambiguous and is never
+	// resubmitted. queueBudget, not an attempt count, decides when to stop.
+	if runpod.IsRetryableSubmit(err) {
+		if _, berr := w.st.BumpRetries(j.ID); berr != nil {
 			w.log.Error("worker: submit retry count", "job", j.ID, "err", berr)
 			return
 		}
-		if n < maxTransient {
-			if terr := w.st.TransitionJob(j.ID, store.StateSubmitting, store.StateQueued, nil); terr == nil {
-				return
-			}
+		if terr := w.st.TransitionJob(j.ID, store.StateSubmitting, store.StateQueued, nil); terr == nil {
+			return
 		}
 	}
 	reason := "submit-rejected: " + err.Error()

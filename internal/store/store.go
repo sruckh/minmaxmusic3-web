@@ -88,7 +88,13 @@ type Job struct {
 	Duration  float64
 	Seed      *int64
 	Error     string
+	Retries   int
 	CreatedAt time.Time
+	// StartedAt is stamped the first time RunPod reports IN_PROGRESS and stays
+	// nil while the job is still waiting for a GPU worker. The worker's two
+	// budgets hang off this split: queue wait is measured from CreatedAt,
+	// generation from here.
+	StartedAt *time.Time
 	UpdatedAt time.Time
 }
 
@@ -264,6 +270,11 @@ CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
 		{"jobs", "user_id", `ALTER TABLE jobs ADD COLUMN user_id TEXT NOT NULL DEFAULT '` + LegacyUserID + `'`},
 		{"songs", "user_id", `ALTER TABLE songs ADD COLUMN user_id TEXT NOT NULL DEFAULT '` + LegacyUserID + `'`},
 		{"songs", "is_public", `ALTER TABLE songs ADD COLUMN is_public INTEGER NOT NULL DEFAULT 0`},
+		// Nullable on purpose: NULL means "never reached a GPU", which is
+		// exactly the distinction the queue budget needs. No DEFAULT — SQLite
+		// would render CURRENT_TIMESTAMP in a format the driver cannot compare
+		// against a Go time.Time (see the note on migrate).
+		{"jobs", "started_at", `ALTER TABLE jobs ADD COLUMN started_at TIMESTAMP`},
 	} {
 		has, err := s.hasColumn(c.table, c.col)
 		if err != nil {
@@ -354,16 +365,34 @@ func (s *Store) FailJob(id, reason string) error {
 	return nil
 }
 
+const jobCols = `id, state, runpod_id, user_id, lyrics, caption, duration_s,
+	seed, error, retries, created_at, started_at, updated_at`
+
+func scanJob(sc interface{ Scan(...any) error }, j *Job) error {
+	// started_at is NULL until the job reaches a GPU, so it cannot scan
+	// straight into a time.Time.
+	var started sql.NullTime
+	if err := sc.Scan(&j.ID, &j.State, &j.RunPodID, &j.UserID, &j.Lyrics, &j.Caption,
+		&j.Duration, &j.Seed, &j.Error, &j.Retries, &j.CreatedAt, &started,
+		&j.UpdatedAt); err != nil {
+		return err
+	}
+	j.StartedAt = nil
+	if started.Valid {
+		t := started.Time.UTC()
+		j.StartedAt = &t
+	}
+	return nil
+}
+
 // Job returns a job the caller owns, or nil. It is scoped for the same reason
 // Song is: the job-status route takes an id straight from the URL, and the
 // song it renders is reached through this lookup.
 func (s *Store) Job(id string, a Access) (*Job, error) {
-	row := s.db.QueryRow(`SELECT id, state, runpod_id, user_id, lyrics, caption,
-		duration_s, seed, error, created_at, updated_at
+	row := s.db.QueryRow(`SELECT `+jobCols+`
 		FROM jobs WHERE id = ? AND `+ownedBy, append([]any{id}, a.args()...)...)
 	var j Job
-	err := row.Scan(&j.ID, &j.State, &j.RunPodID, &j.UserID, &j.Lyrics, &j.Caption,
-		&j.Duration, &j.Seed, &j.Error, &j.CreatedAt, &j.UpdatedAt)
+	err := scanJob(row, &j)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -395,8 +424,7 @@ func (s *Store) ActiveJobs() ([]*Job, error) {
 }
 
 func (s *Store) jobsByState(state string, limit int) ([]*Job, error) {
-	rows, err := s.db.Query(`SELECT id, state, runpod_id, user_id, lyrics, caption,
-		duration_s, seed, error, created_at, updated_at
+	rows, err := s.db.Query(`SELECT `+jobCols+`
 		FROM jobs WHERE state = ? ORDER BY created_at LIMIT ?`, state, limit)
 	if err != nil {
 		return nil, err
@@ -405,8 +433,7 @@ func (s *Store) jobsByState(state string, limit int) ([]*Job, error) {
 	var out []*Job
 	for rows.Next() {
 		var j Job
-		if err := rows.Scan(&j.ID, &j.State, &j.RunPodID, &j.UserID, &j.Lyrics, &j.Caption,
-			&j.Duration, &j.Seed, &j.Error, &j.CreatedAt, &j.UpdatedAt); err != nil {
+		if err := scanJob(rows, &j); err != nil {
 			return nil, err
 		}
 		out = append(out, &j)

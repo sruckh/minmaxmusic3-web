@@ -1398,3 +1398,64 @@ func TestLastAdminGuard(t *testing.T) {
 		t.Fatalf("delete a disabled admin = %v", err)
 	}
 }
+
+// started_at is the schema's only nullable timestamp: NULL means "never
+// reached a GPU", which is the distinction the worker's queue budget rests on.
+func TestJobStartedAtIsNilUntilAGPUStampsIt(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	j := testJob("j1")
+	if err := s.CreateJob(j); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.Job("j1", legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.StartedAt != nil {
+		t.Fatalf("a freshly queued job claims to have started at %v", *got.StartedAt)
+	}
+	if got.Retries != 0 {
+		t.Errorf("retries = %d on a new job, want 0", got.Retries)
+	}
+
+	// One refusal, then the stamp the worker writes on the first IN_PROGRESS.
+	if n, err := s.BumpRetries("j1"); err != nil || n != 1 {
+		t.Fatalf("BumpRetries = %d, %v", n, err)
+	}
+	start := time.Now().UTC()
+	if err := s.TransitionJob("j1", StateQueued, StateRunning,
+		func(a map[string]any) { a["started_at"] = start }); err != nil {
+		t.Fatal(err)
+	}
+
+	// Both read paths must surface it: the worker polls through ActiveJobs.
+	active, err := s.ActiveJobs()
+	if err != nil || len(active) != 1 {
+		t.Fatalf("active jobs = %d, err=%v", len(active), err)
+	}
+	for _, g := range []*Job{active[0], mustJob(t, s, "j1")} {
+		if g.StartedAt == nil {
+			t.Fatal("started_at did not survive the round trip")
+		}
+		if d := g.StartedAt.Sub(start); d > time.Millisecond || d < -time.Millisecond {
+			t.Errorf("started_at drifted by %v", d)
+		}
+		if g.Retries != 1 {
+			t.Errorf("retries = %d, want 1", g.Retries)
+		}
+	}
+}
+
+func mustJob(t *testing.T, s *Store, id string) *Job {
+	t.Helper()
+	j, err := s.Job(id, legacy)
+	if err != nil || j == nil {
+		t.Fatalf("Job(%s) = %v, %v", id, j, err)
+	}
+	return j
+}
