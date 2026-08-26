@@ -642,3 +642,52 @@ func TestAcceptanceThemeAndResponsiveHooksArePresent(t *testing.T) {
 		}
 	}
 }
+
+// TestAcceptanceGenerateDraftSurvivesNavigation covers the generate form being a
+// scratchpad a song is written in rather than a fill-and-submit form: its fields
+// are saved under a per-user key so leaving for History and coming back does not
+// wipe work in progress, a Clear button resets it deliberately, and logging out
+// drops the draft so a shared browser does not hand it to the next account.
+func TestAcceptanceGenerateDraftSurvivesNavigation(t *testing.T) {
+	h, _, s := newTestEnvWith(t, nil)
+	useBcryptCost(t, bcrypt.MinCost)
+	_, tok := mkSession(t, s, "drafter", store.StatusApproved, store.RoleUser)
+
+	j := newJourney(t, h, "drafter")
+	j.token = tok
+	body := j.mustGet("/", 200)
+
+	// Namespaced per user, so two accounts on one browser never share a draft.
+	if !strings.Contains(body, `'mm3-draft:drafter'`) {
+		t.Error("generate page does not scope its saved draft to the signed-in user")
+	}
+	// Every field a song is written into is kept, not just the lyrics.
+	for _, f := range []string{"idea", "lyrics", "caption", "dur", "seed", "bpm", "key", "vocals"} {
+		if !strings.Contains(body, `'`+f+`'`) {
+			t.Errorf("draft does not persist the %q field", f)
+		}
+	}
+	// Restoring on load and saving on change are what make navigating away safe.
+	for _, hook := range []string{"this.restore()", "$watch", "localStorage.setItem(MM3_DRAFT_KEY"} {
+		if !strings.Contains(body, hook) {
+			t.Errorf("generate page is missing %q, so the draft will not survive navigation", hook)
+		}
+	}
+	// Clearing is an explicit user action, never a side effect of navigating.
+	// Clear sits in the accordion header beside Assistant, whose own @click
+	// toggles the section — so .stop is load-bearing, not decoration.
+	if !strings.Contains(body, `@click.stop="clear()"`) {
+		t.Error("generate page offers no Clear button, or its click is not stopped " +
+			"from also collapsing the lyrics accordion")
+	}
+	if !strings.Contains(body, `:disabled="!dirty"`) {
+		t.Error("Clear is not disabled on an untouched form")
+	}
+
+	// Logging out drops this account's draft from every page carrying the nav.
+	for _, path := range []string{"/", "/history"} {
+		if !strings.Contains(j.mustGet(path, 200), `removeItem('mm3-draft:drafter')`) {
+			t.Errorf("%s: logging out does not drop the saved draft", path)
+		}
+	}
+}

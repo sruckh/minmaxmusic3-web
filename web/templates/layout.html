@@ -46,7 +46,10 @@
     {{if .User}}
     <div class="session-identity">
       <span class="current-user" title="Signed in as {{.User.Username}}">{{.User.Username}}</span>
-      <form method="post" action="/logout" style="margin:0">
+      <!-- Drop this account's saved generate draft; a shared browser must not
+           hand one user's lyrics to whoever logs in next. -->
+      <form method="post" action="/logout" style="margin:0"
+            onsubmit="try{localStorage.removeItem('mm3-draft:{{.User.Username}}')}catch(e){}">
         <button type="submit" class="btn btn--ghost btn--sm">Log out</button>
       </form>
     </div>

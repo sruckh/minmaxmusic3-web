@@ -4,13 +4,27 @@
 # /run/secrets, and start the stack. The /dev/shm source MUST stay in place
 # while the container exists (Docker bind-mounts resolve by source path).
 # It is gone on every host reboot — simply re-run this script after boot.
+#
+# --build is not optional. compose.yml sets both `build:` and
+# `image: mm3-web:latest`, so Compose reuses the tagged image whenever it
+# already exists and --force-recreate then rebuilds only the *container*:
+# without --build this script restarts the old binary and the old templates
+# and still reports healthy. With an unchanged tree the layer cache makes it
+# nearly free; when something changed, `FROM test AS build` reruns the suite
+# and refuses to produce a runtime image if it fails. Set MM3_SKIP_BUILD=1 for
+# a plain restart — passing --no-build cannot work, Compose rejects it
+# alongside --build.
 set -eu
 
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 # shellcheck source=env.sh
 . "$SCRIPT_DIR/env.sh"
 
-docker compose up -d --force-recreate "$@"
+if [ "${MM3_SKIP_BUILD:-}" = "1" ]; then
+	docker compose up -d --force-recreate "$@"
+else
+	docker compose up -d --build --force-recreate "$@"
+fi
 
 i=0
 until docker exec mm3-app test -r /run/secrets/infisical_client_secret 2>/dev/null; do

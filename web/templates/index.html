@@ -38,6 +38,9 @@
             <button type="button" class="btn btn--ghost btn--sm" @click.stop="showAssistant = !showAssistant" style="padding:2px 8px; font-size:11px;">
               ✨ Assistant
             </button>
+            <!-- .stop, or clearing the form would also collapse the accordion. -->
+            <button type="button" class="btn btn--ghost btn--sm" @click.stop="clear()" :disabled="!dirty"
+                    style="padding:2px 8px; font-size:11px;">Clear</button>
             <span class="accordion-toggle-icon" :class="{ 'open': openLyrics }">▼</span>
           </div>
         </div>
@@ -185,11 +188,64 @@ function insertTag(btn) {
   ta.focus();
 }
 
+// The generate form is a scratchpad a song is written in, not a fill-and-submit
+// form, so it survives leaving the page for History and coming back. The draft
+// is scoped per user and dropped on logout (see layout.html), so a shared
+// browser never hands one account's lyrics to the next.
+const MM3_DRAFT_KEY = 'mm3-draft:{{if .User}}{{.User.Username}}{{end}}';
+const MM3_DRAFT_FIELDS = ['idea', 'lyrics', 'caption', 'dur', 'seed', 'bpm', 'key', 'vocals'];
+
+function mm3Defaults() {
+  return { idea: '', lyrics: '', caption: '', dur: 30, seed: null, bpm: 96, key: 'C Major', vocals: true };
+}
+
 function mm3Page() {
   return {
-    idea: '', lyrics: '', caption: '', dur: 30, seed: null, bpm: 96, key: 'C Major', vocals: true,
+    ...mm3Defaults(),
     showAssistant: false, thinking: false, error: '',
     openLyrics: true, openConfig: true,
+    saveTimer: null,
+
+    init() {
+      this.restore();
+      MM3_DRAFT_FIELDS.forEach(f => this.$watch(f, () => this.save()));
+    },
+
+    // True when anything on the form differs from a fresh page.
+    get dirty() {
+      const d = mm3Defaults();
+      return MM3_DRAFT_FIELDS.some(f => this[f] !== d[f]);
+    },
+
+    restore() {
+      let saved = null;
+      try { saved = JSON.parse(localStorage.getItem(MM3_DRAFT_KEY)); } catch { return; }
+      if (!saved || typeof saved !== 'object') return;
+      MM3_DRAFT_FIELDS.forEach(f => { if (saved[f] !== undefined) this[f] = saved[f]; });
+      // The slider and stepper both read dur, so it has to land in range.
+      this.dur = Math.min(300, Math.max(15, parseInt(this.dur, 10) || 30));
+    },
+
+    // Debounced: lyrics fire a watch per keystroke.
+    save() {
+      clearTimeout(this.saveTimer);
+      this.saveTimer = setTimeout(() => {
+        try {
+          if (!this.dirty) { localStorage.removeItem(MM3_DRAFT_KEY); return; }
+          const d = {};
+          MM3_DRAFT_FIELDS.forEach(f => d[f] = this[f]);
+          localStorage.setItem(MM3_DRAFT_KEY, JSON.stringify(d));
+        } catch { /* private mode or quota — the form still works */ }
+      }, 250);
+    },
+
+    clear() {
+      if (this.dirty && !confirm('Clear the lyrics, style caption and settings on this page?')) return;
+      Object.assign(this, mm3Defaults());
+      this.error = '';
+      try { localStorage.removeItem(MM3_DRAFT_KEY); } catch { /* nothing to drop */ }
+    },
+
     formatDur(sec) {
       if (!sec) return '30s';
       sec = Math.min(300, Math.max(15, parseInt(sec, 10) || 30));
