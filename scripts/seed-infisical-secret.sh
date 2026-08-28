@@ -57,12 +57,19 @@ EOF
 write_env_file() {
   [ -d "$PROFILE_DIR" ] || mkdir -p "$PROFILE_DIR"
   chmod 700 "$PROFILE_DIR"
+  # The file is the operator-values store (see scripts/env.sh). Preserve a
+  # previously recorded public URL across re-seeding unless overridden now.
+  OLD_URL="$(sed -n 's/^MM3_PUBLIC_URL=//p' "$ENV_FILE" 2>/dev/null || true)"
+  MM3_PUBLIC_URL="${MM3_PUBLIC_URL:-$OLD_URL}"
   cat > "$ENV_FILE" <<EOF
 INFISICAL_HOST=${INFISICAL_HOST}
 INFISICAL_CLIENT_ID=${INFISICAL_CLIENT_ID}
 INFISICAL_PROJECT_ID=${INFISICAL_PROJECT_ID}
 INFISICAL_ENV=${INFISICAL_ENV}
 EOF
+  if [ -n "$MM3_PUBLIC_URL" ]; then
+    printf 'MM3_PUBLIC_URL=%s\n' "$MM3_PUBLIC_URL" >> "$ENV_FILE"
+  fi
   chmod 600 "$ENV_FILE"
 }
 

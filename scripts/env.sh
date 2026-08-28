@@ -1,6 +1,7 @@
 #!/bin/sh
-# Source non-secret Infisical identity values and create an ephemeral
-# Compose-secret source in /dev/shm:
+# Source operator values (non-secret Infisical identity values and the
+# deployment's public URL — hosts never enter the repository) and create an
+# ephemeral Compose-secret source in /dev/shm:
 #
 #   . scripts/env.sh
 #   docker compose up -d
@@ -26,6 +27,14 @@ INFISICAL_PROJECT_ID="$(sed -n 's/^INFISICAL_PROJECT_ID=//p' "$INFISICAL_CONFIG"
 INFISICAL_ENV="$(sed -n 's/^INFISICAL_ENV=//p' "$INFISICAL_CONFIG")"
 export INFISICAL_HOST INFISICAL_CLIENT_ID INFISICAL_PROJECT_ID
 export INFISICAL_ENV="${INFISICAL_ENV:-dev}"
+
+# The canonical public origin, kept in the same operator file so bring-up
+# needs no remembered exports. Optional: without it the app trusts the
+# request's own Host, which a correctly forwarded proxy already satisfies.
+MM3_PUBLIC_URL="$(sed -n 's/^MM3_PUBLIC_URL=//p' "$INFISICAL_CONFIG")"
+if [ -n "$MM3_PUBLIC_URL" ]; then
+	export MM3_PUBLIC_URL
+fi
 
 # Plaintext lives only in RAM (tmpfs). Mode 0644 so the container's
 # non-root mm3 user can read the bind-mounted secret.

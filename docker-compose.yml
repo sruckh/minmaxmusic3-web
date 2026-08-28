@@ -17,8 +17,10 @@ services:
       - shared_net
     environment:
       # Canonical external origin, trusted for same-origin write checks.
-      # Export MM3_PUBLIC_URL before bring-up; it identifies this deployment,
-      # so it is never committed. Omitting it falls back to request-Host trust.
+      # scripts/env.sh exports it from the operator's local
+      # ~/.config/mm3-web-infisical/infisical.env; it identifies this
+      # deployment and is never committed. Omitting it falls back to
+      # request-Host trust.
       MM3_PUBLIC_URL: ${MM3_PUBLIC_URL:-}
       MM3_MAX_IN_FLIGHT: ${MM3_MAX_IN_FLIGHT:-2}
       # Universal Auth machine identity — the entrypoint trades these for a

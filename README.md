@@ -226,7 +226,7 @@ Values marked *(Infisical)* have no default. They are stored in the Infisical pr
 | Environment Variable | Default Value | Description |
 |---|---|---|
 | `MM3_ADDR` | `:8080` | Server listen address. |
-| `MM3_PUBLIC_URL` | *(unset)* | Optional canonical external origin, trusted as a same-origin source for state-changing requests behind the reverse proxy. Unset, a same-origin write must present this request's own Host — which any correctly forwarded proxy already does. Export it only when your external origin can differ from what reaches the app. |
+| `MM3_PUBLIC_URL` | *(unset)* | Optional canonical external origin, trusted as a same-origin source for state-changing requests behind the reverse proxy. Unset, a same-origin write must present this request's own Host — which any correctly forwarded proxy already does. Bring-up loads it automatically from the operator's local `~/.config/mm3-web-infisical/infisical.env`; set it there rather than in any tracked file. |
 | `MM3_WEB_DIR` | `/app/web` | Directory containing web templates and static assets. |
 | `MM3_DB_PATH` | `/data/mm3.db` | SQLite database file path. |
 | `MM3_AUDIO_DIR` | `/data/audio` | Output directory for audio M4A files. |
