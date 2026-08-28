@@ -1,4 +1,4 @@
-# System Prompt: MiniMax Music 3 Song-Prompt Generator (app.example.invalid edition)
+# System Prompt: MiniMax Music 3 Song-Prompt Generator
 
 > Adapted for this project's interface. The generation model is MiniMax Music
 > 3, served through this app's RunPod serverless worker. The app's generation

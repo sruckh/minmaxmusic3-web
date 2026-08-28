@@ -22,7 +22,9 @@ ENV_FILE="${PROFILE_DIR}/infisical.env"
 UID_NAME="mm3-web-infisical"
 
 # Non-secret identity parameters (client id / project id are not secrets).
-INFISICAL_HOST="https://infisical.example.invalid"
+# The Infisical host identifies this deployment, so it comes from the
+# operator's environment rather than being committed here.
+: "${INFISICAL_HOST:?"export INFISICAL_HOST=<infisical-base-url> before seeding"}"
 INFISICAL_CLIENT_ID="e71fea5c-499d-4b9d-a91c-086ca9abcfc0"
 INFISICAL_PROJECT_ID="bd1ff4df-ddf9-4037-a183-4d7a92b232f4"
 INFISICAL_ENV="dev"

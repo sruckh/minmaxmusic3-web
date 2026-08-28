@@ -56,7 +56,7 @@ func env(key, def string) string {
 func Load() (*Config, error) {
 	c := &Config{
 		Addr:               env("MM3_ADDR", ":8080"),
-		PublicURL:          env("MM3_PUBLIC_URL", "https://app.example.invalid"),
+		PublicURL:          env("MM3_PUBLIC_URL", ""), // optional pin for the trusted external origin
 		WebDir:             env("MM3_WEB_DIR", "/app/web"), // absolute: no CWD dependence
 		DBPath:             env("MM3_DB_PATH", "/data/mm3.db"),
 		AudioDir:           env("MM3_AUDIO_DIR", "/data/audio"),

@@ -42,6 +42,10 @@ AGENTS.md
 # ICM workspace (agent-local, not shipped)
 .icm/
 _config/
+/IDENTITY.md
+/CONTEXT.md
+/stages/
+/setup/
 
 # OS / IDE / Resource archives
 .DS_Store

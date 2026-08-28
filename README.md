@@ -38,8 +38,8 @@ The application is **multi-user and closed by default**: every route except sign
 
 ### 🪄 AI Songwriting & Style Assistant
 - Integrated AI assistant (`POST /assistant`) that drafts tagged lyrics (`[Verse]`, `[Chorus]`, `[Bridge]`, `[Outro]`) and structured style descriptions from a simple prompt.
-- **Fast Response Latency**: Sends `thinking: {"type": "disabled"}` and `reasoning_effort: "none"` to bypass internal thinking delays on reasoning models (`deepseek-v4-flash`), delivering drafts in under 3 seconds.
-- **Resilient JSON Parsing**: Multi-stage parser handles closed code fences, unclosed code fences, and raw JSON objects.
+- **Thinking disabled by default**: Sends `thinking: {"type": "disabled"}` and `reasoning_effort: "none"` so reasoning models (e.g. `deepseek-v4-flash`) skip internal thinking delays — without these they can take well over a minute to reply. The call itself is still budgeted at a 120-second timeout.
+- **Resilient JSON Parsing**: The parser strips `<think>`/`<reasoning>` blocks and folds server-sent-event replies into a single message, then extracts the draft from closed code fences, unclosed code fences, or a raw JSON object anywhere in the reply.
 
 ### ⚡ RunPod Serverless GPU Inference
 - Asynchronous worker queue connected to the RunPod Serverless worker ([sruckh/minmaxmusic3-serverless](https://github.com/sruckh/minmaxmusic3-serverless)).
@@ -117,7 +117,7 @@ level=WARN msg="administrator login disabled: ADMIN_USER and ADMIN_PASSWORD must
 
 ## Authentication & Administration
 
-Every route other than `/login`, `/register`, `/logout`, `/healthz`, `/static/`, and `/favicon.ico` requires an approved session. There is no anonymous access to generation, history, audio, or the admin dashboard.
+Every route other than `/login`, `/register`, `/logout`, `/healthz`, `/static/`, and `/favicon.ico` requires an approved session. There is no anonymous access to generation, history, audio, or the admin dashboard. Sessions expire after 7 days, and the account's status is re-resolved from the database on every request.
 
 ### The administrator account
 
@@ -186,11 +186,11 @@ Two things an operator should know:
 
 ## API Reference
 
-Access is enforced by one middleware wrapping the entire mux: anything not listed as **Public** below requires an approved session, and anything under `/admin` additionally requires administrator privilege. State-changing requests are also origin-checked.
+Access is enforced by one middleware wrapping the entire mux: anything not listed as **Public** below requires an approved session, and anything under `/admin` additionally requires administrator privilege. State-changing requests are also origin-checked. Beyond the credential endpoints, `/jobs` accepts at most 6 generations per hour per IP and `/assistant` at most 20 drafts per day per IP — both answered with `429 Too Many Requests` and a `Retry-After` header.
 
 | Endpoint | Method | Access | Description |
 |---|---|---|---|
-| `GET /healthz` | `GET` | Public | Healthcheck endpoint (`200 OK`). Returns healthy even when administrator login is disabled. |
+| `GET /healthz` | `GET` | Public | Healthcheck endpoint — HTTP 200 with body `ok`, probed by the Docker `HEALTHCHECK`. Returns healthy even when administrator login is disabled. |
 | `GET /login` | `GET` | Public | Sign-in page. |
 | `POST /login` | `POST` | Public | Verify credentials and issue a session. Rate limited (10 / 15 min / IP). |
 | `GET /register` | `GET` | Public | Account request page. |
@@ -209,7 +209,7 @@ Access is enforced by one middleware wrapping the entire mux: anything not liste
 | `POST /songs/{id}/toggle-public` | `POST` | Owner / Admin | Set sharing explicitly — send `public=1` or `public=0`. Not a blind flip. |
 | `POST /songs/{id}/title` | `POST` | Owner / Admin | Update song title from the library. |
 | `DELETE /songs/{id}` | `DELETE` | Owner / Admin | Delete song, purge database records, and remove audio file. |
-| `GET /audio/{id}` | `GET` | Owner / Shared / Admin | Stream or download generated M4A audio file. |
+| `GET /audio/{id}` | `GET` | Owner / Shared / Admin | Stream generated audio in the browser — M4A, with legacy `.wav` files passed through as-is. |
 | `GET /admin` | `GET` | Admin | User administration dashboard with pending-request badge. |
 | `POST /admin/users/{id}/approve` | `POST` | Admin | Approve an account. |
 | `POST /admin/users/{id}/disable` | `POST` | Admin | Disable an account and revoke its sessions. |
@@ -226,7 +226,7 @@ Values marked *(Infisical)* have no default. They are stored in the Infisical pr
 | Environment Variable | Default Value | Description |
 |---|---|---|
 | `MM3_ADDR` | `:8080` | Server listen address. |
-| `MM3_PUBLIC_URL` | `<your-public-url>` | Canonical external origin. Accepted as a same-origin source for state-changing requests behind the reverse proxy. |
+| `MM3_PUBLIC_URL` | *(unset)* | Optional canonical external origin, trusted as a same-origin source for state-changing requests behind the reverse proxy. Unset, a same-origin write must present this request's own Host — which any correctly forwarded proxy already does. Export it only when your external origin can differ from what reaches the app. |
 | `MM3_WEB_DIR` | `/app/web` | Directory containing web templates and static assets. |
 | `MM3_DB_PATH` | `/data/mm3.db` | SQLite database file path. |
 | `MM3_AUDIO_DIR` | `/data/audio` | Output directory for audio M4A files. |
