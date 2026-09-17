@@ -28,14 +28,12 @@ client_secret.gpg
 infisical.env
 
 # Local agent & tooling temp
-.goals/
-.outline/
-.claude/settings.local.json
+# Every dot-directory (.claude/, .goals/, .outline/, .icm/, .tokensave/,
+# .headroom/, .serena/, .codegraph/, etc.) is agent/tooling-local and never
+# tracked. If a dot-dir ever needs to ship (e.g. .github/workflows), add an
+# explicit `!.github/` exception below this line.
+.*/
 .mcp.json
-.tokensave/
-.headroom/
-.serena/
-.codegraph/
 CLAUDE.md
 AGENTS.md
 
