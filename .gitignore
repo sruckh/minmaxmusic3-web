@@ -34,6 +34,15 @@ infisical.env
 # explicit `!.github/` exception below this line.
 .*/
 .mcp.json
+node_modules/
+
+# ICM workspace (agent-local planning docs, not shipped — not built into the
+# container, see Dockerfile/.dockerignore)
+_config/
+/IDENTITY.md
+/CONTEXT.md
+/stages/
+/setup/
 CLAUDE.md
 AGENTS.md
 
