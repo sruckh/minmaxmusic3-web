@@ -28,27 +28,29 @@ client_secret.gpg
 infisical.env
 
 # Local agent & tooling temp
-.goals/
-.outline/
-.claude/settings.local.json
-.tokensave/
-.headroom/
-.serena/
-.codegraph/
-.tokensave/
-CLAUDE.md
-AGENTS.md
+# Every dot-directory (.claude/, .goals/, .outline/, .icm/, .tokensave/,
+# .headroom/, .serena/, .codegraph/, etc.) is agent/tooling-local and never
+# tracked. If a dot-dir ever needs to ship (e.g. .github/workflows), add an
+# explicit `!.github/` exception below this line.
+.*/
+.mcp.json
+node_modules/
 
-# ICM workspace (agent-local, not shipped)
-.icm/
+# ICM workspace (agent-local planning docs, not shipped — not built into the
+# container, see Dockerfile/.dockerignore)
 _config/
 /IDENTITY.md
 /CONTEXT.md
 /stages/
 /setup/
+CLAUDE.md
+AGENTS.md
 
 # OS / IDE / Resource archives
 .DS_Store
 Thumbs.db
 *.zip
 favicon_io.zip
+
+# graft's local graph cache — regenerable, not committed (run `graft build`).
+/graft/
