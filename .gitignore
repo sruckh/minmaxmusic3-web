@@ -31,6 +31,7 @@ infisical.env
 .goals/
 .outline/
 .claude/settings.local.json
+.mcp.json
 .tokensave/
 .headroom/
 .serena/
@@ -43,3 +44,6 @@ AGENTS.md
 Thumbs.db
 *.zip
 favicon_io.zip
+
+# graft's local graph cache — regenerable, not committed (run `graft build`).
+/graft/
