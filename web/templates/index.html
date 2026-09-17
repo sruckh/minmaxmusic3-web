@@ -26,6 +26,10 @@
 
   <!-- Generation Form & Vertical Stack Accordion Layout -->
   <form id="gen" hx-post="/jobs" hx-target="#job" hx-swap="innerHTML">
+    <!-- The assistant textarea lives outside this form (it's a sibling panel,
+         shown/hidden independently), so its value needs a hidden mirror here
+         or it would never reach handleCreateJob on submit. -->
+    <input type="hidden" name="idea" x-model="idea">
     <main class="vertical-stack">
 
       <!-- SECTION 1: LYRICS & STYLE (Accordion) -->

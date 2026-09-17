@@ -387,7 +387,7 @@ func (w *Worker) finish(ctx context.Context, j *store.Job, out *runpod.Output) e
 	// land on the legacy owner and be invisible to the user who asked for it.
 	return w.st.CreateSong(&store.Song{
 		ID: songID, JobID: j.ID, UserID: j.UserID,
-		Lyrics: j.Lyrics, Caption: j.Caption,
+		Lyrics: j.Lyrics, Caption: j.Caption, Idea: j.Idea,
 		Duration: out.Duration, Seed: j.Seed, Engine: out.Engine,
 		Delivery: out.Delivery, AudioPath: path, Title: titleOf(j),
 		CreatedAt: time.Now().UTC(),

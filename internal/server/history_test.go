@@ -27,6 +27,7 @@ func completeOneSongTitled(t *testing.T, title string) (http.Handler, string) {
 		"instructions":   {"Global Metadata: acoustic pop. Vocal Details: soft female. Arrangement: guitar."},
 		"audio_duration": {"30"},
 		"seed":           {"7"},
+		"idea":           {"A song about late-night drives"},
 	}
 	if title != "" {
 		form.Set("title", title)
@@ -105,6 +106,7 @@ func TestSongDetailCarriesGeneratorDraft(t *testing.T) {
 		Title   string  `json:"title"`
 		Lyrics  string  `json:"lyrics"`
 		Caption string  `json:"caption"`
+		Idea    string  `json:"idea"`
 		Dur     float64 `json:"dur"`
 		Seed    *int64  `json:"seed"`
 	}
@@ -121,6 +123,11 @@ func TestSongDetailCarriesGeneratorDraft(t *testing.T) {
 	}
 	if !strings.Contains(draft.Caption, "acoustic pop") {
 		t.Errorf("draft caption = %q", draft.Caption)
+	}
+	// The idea the song was drafted from comes back too, or reworking a song
+	// silently drops it from the assistant box.
+	if draft.Idea != "A song about late-night drives" {
+		t.Errorf("draft idea = %q, want %q", draft.Idea, "A song about late-night drives")
 	}
 	if draft.Dur != 30 {
 		t.Errorf("draft dur = %v, want 30", draft.Dur)
@@ -279,5 +286,3 @@ func TestUpdateSongTitle(t *testing.T) {
 		t.Fatalf("expected 404 for missing song, got %d", missingRes.Code)
 	}
 }
-
-

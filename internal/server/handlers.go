@@ -71,6 +71,7 @@ type jobForm struct {
 	Lyrics   string
 	Caption  string
 	Title    string
+	Idea     string
 	Duration float64
 	Seed     *int64
 }
@@ -79,6 +80,12 @@ type jobForm struct {
 // keep a pasted essay out of the history list; the worker's caption-derived
 // fallback truncates at 60, and a deliberate title is allowed more room.
 const maxTitle = 120
+
+// maxIdea bounds the saved assistant prompt. It plays no role in generation
+// — RunPod never sees it — so an oversized value is silently truncated
+// rather than rejected; the assistant round trip already worked before this
+// point, and a saved idea is a courtesy, not a requirement.
+const maxIdea = 4000
 
 // handleCreateJob validates the form and enqueues a job; returns the job
 // fragment (htmx swap) in well under a second — no RunPod in this path.
@@ -95,6 +102,10 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	f.Lyrics = strings.TrimSpace(r.FormValue("input"))
 	f.Caption = strings.TrimSpace(r.FormValue("instructions"))
 	f.Title = strings.TrimSpace(r.FormValue("title"))
+	f.Idea = strings.TrimSpace(r.FormValue("idea"))
+	if len(f.Idea) > maxIdea {
+		f.Idea = f.Idea[:maxIdea]
+	}
 	f.Duration = 30
 	if v := r.FormValue("audio_duration"); v != "" {
 		if d, err := strconv.ParseFloat(v, 64); err == nil {
@@ -115,7 +126,7 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	j := &store.Job{
 		ID: worker.NewJobID(), State: store.StateQueued,
 		UserID: s.caller(r).UserID,
-		Lyrics: f.Lyrics, Caption: f.Caption, Title: f.Title,
+		Lyrics: f.Lyrics, Caption: f.Caption, Title: f.Title, Idea: f.Idea,
 		Duration: f.Duration, Seed: f.Seed, CreatedAt: time.Now().UTC(),
 	}
 	if err := s.st.CreateJob(j); err != nil {

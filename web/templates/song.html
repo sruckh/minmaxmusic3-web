@@ -66,11 +66,14 @@ function mm3EditInGenerator() {
   if (mm3DraftIsDirty(mm3ReadDraft()) &&
       !confirm('The generate page already has a draft on it. Replace it with this song?')) return;
   // A fresh default draft, not a merge: the fields this song does not carry
-  // (the assistant idea, tempo, key, vocals) should read as untouched.
+  // (tempo, key, vocals) should read as untouched. The assistant idea is
+  // carried when the song was originally drafted from one — otherwise it is
+  // empty on the song too, so this still resets it like everything else.
   const d = mm3Defaults();
   d.title = MM3_SONG_DRAFT.title;
   d.lyrics = MM3_SONG_DRAFT.lyrics;
   d.caption = MM3_SONG_DRAFT.caption;
+  d.idea = MM3_SONG_DRAFT.idea;
   d.dur = mm3ClampDur(MM3_SONG_DRAFT.dur);
   d.seed = MM3_SONG_DRAFT.seed;
   mm3WriteDraft(d);

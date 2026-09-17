@@ -211,6 +211,43 @@ func TestUpdateSongTitle(t *testing.T) {
 	}
 }
 
+// TestJobAndSongIdeaRoundTrips: the assistant prompt a job was drafted from
+// has to survive both CreateJob and the job→song handoff CreateSong performs
+// at completion, or "Edit in generator" would have nothing to hand back.
+func TestJobAndSongIdeaRoundTrips(t *testing.T) {
+	s := openTemp(t)
+
+	j := testJob("job-idea")
+	j.Idea = "A song about late-night drives"
+	if err := s.CreateJob(j); err != nil {
+		t.Fatal(err)
+	}
+	gotJob, err := s.Job(j.ID, legacy)
+	if err != nil || gotJob == nil {
+		t.Fatalf("Job lookup error: %v", err)
+	}
+	if gotJob.Idea != j.Idea {
+		t.Errorf("job idea = %q, want %q", gotJob.Idea, j.Idea)
+	}
+
+	now := time.Now().UTC()
+	song := &Song{
+		ID: "song-idea", JobID: j.ID, Lyrics: "la", Caption: "pop", Idea: j.Idea,
+		Duration: 30, Engine: "diffusers", Delivery: "base64",
+		AudioPath: "/tmp/idea.m4a", CreatedAt: now,
+	}
+	if err := s.CreateSong(song); err != nil {
+		t.Fatal(err)
+	}
+	gotSong, err := s.Song(song.ID, legacy)
+	if err != nil || gotSong == nil {
+		t.Fatalf("Song lookup error: %v", err)
+	}
+	if gotSong.Idea != j.Idea {
+		t.Errorf("song idea = %q, want %q", gotSong.Idea, j.Idea)
+	}
+}
+
 func openTemp(t *testing.T) *Store {
 	t.Helper()
 	s, err := Open(filepath.Join(t.TempDir(), "test.db"))
@@ -330,6 +367,14 @@ CREATE TABLE songs (
 	// an old job finishing after an upgrade still gets a caption title.
 	if j.Title != "" {
 		t.Fatalf("legacy job title = %q, want empty", j.Title)
+	}
+	// Same reasoning for idea: the legacy tables have no such column, so a
+	// migrated row must read back as "no idea recorded", not an error.
+	if j.Idea != "" {
+		t.Fatalf("legacy job idea = %q, want empty", j.Idea)
+	}
+	if g.Idea != "" {
+		t.Fatalf("legacy song idea = %q, want empty", g.Idea)
 	}
 }
 

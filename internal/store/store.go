@@ -79,12 +79,18 @@ const ownedBy = `(user_id = ? OR ?)`
 func (a Access) args() []any { return []any{a.UserID, a.Admin} }
 
 type Job struct {
-	ID        string
-	State     string
-	RunPodID  string
-	UserID    string
-	Lyrics    string
-	Caption   string
+	ID       string
+	State    string
+	RunPodID string
+	UserID   string
+	Lyrics   string
+	Caption  string
+	// Idea is the free-text prompt the user gave the AI assistant, if any.
+	// It plays no role in generation — RunPod never sees it — it is carried
+	// through purely so History's "Edit in generator" can hand it back to
+	// the assistant box. Empty means the song was written without the
+	// assistant, or the idea was cleared before Generate was pressed.
+	Idea string
 	// Title is what the user named the song on the generate form. Empty is
 	// normal and means "no name given" — the worker derives one from the
 	// caption at completion rather than storing a guess here.
@@ -103,12 +109,15 @@ type Job struct {
 }
 
 type Song struct {
-	ID        string
-	JobID     string
-	UserID    string
-	IsPublic  bool
-	Lyrics    string
-	Caption   string
+	ID       string
+	JobID    string
+	UserID   string
+	IsPublic bool
+	Lyrics   string
+	Caption  string
+	// Idea is the assistant prompt the job was drafted from, if any — see
+	// the field of the same name on Job.
+	Idea      string
 	Duration  float64
 	Seed      *int64
 	Engine    string
@@ -283,6 +292,10 @@ CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
 		// nothing" — those jobs fall to the caption-derived title they
 		// already have.
 		{"jobs", "title", `ALTER TABLE jobs ADD COLUMN title TEXT NOT NULL DEFAULT ''`},
+		// Empty on existing rows: songs generated before this column existed
+		// were never drafted from a recorded idea, which is exactly true.
+		{"jobs", "idea", `ALTER TABLE jobs ADD COLUMN idea TEXT NOT NULL DEFAULT ''`},
+		{"songs", "idea", `ALTER TABLE songs ADD COLUMN idea TEXT NOT NULL DEFAULT ''`},
 	} {
 		has, err := s.hasColumn(c.table, c.col)
 		if err != nil {
@@ -318,9 +331,9 @@ func (s *Store) hasColumn(table, col string) (bool, error) {
 // CreateJob inserts a queued job owned by j.UserID (legacy when unset).
 func (s *Store) CreateJob(j *Job) error {
 	_, err := s.db.Exec(
-		`INSERT INTO jobs (id, state, user_id, lyrics, caption, title, duration_s, seed, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		j.ID, StateQueued, owner(j.UserID), j.Lyrics, j.Caption, j.Title, j.Duration, j.Seed,
+		`INSERT INTO jobs (id, state, user_id, lyrics, caption, idea, title, duration_s, seed, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		j.ID, StateQueued, owner(j.UserID), j.Lyrics, j.Caption, j.Idea, j.Title, j.Duration, j.Seed,
 		j.CreatedAt.UTC(), j.CreatedAt.UTC())
 	return err
 }
@@ -373,7 +386,7 @@ func (s *Store) FailJob(id, reason string) error {
 	return nil
 }
 
-const jobCols = `id, state, runpod_id, user_id, lyrics, caption, title, duration_s,
+const jobCols = `id, state, runpod_id, user_id, lyrics, caption, idea, title, duration_s,
 	seed, error, retries, created_at, started_at, updated_at`
 
 func scanJob(sc interface{ Scan(...any) error }, j *Job) error {
@@ -381,7 +394,7 @@ func scanJob(sc interface{ Scan(...any) error }, j *Job) error {
 	// straight into a time.Time.
 	var started sql.NullTime
 	if err := sc.Scan(&j.ID, &j.State, &j.RunPodID, &j.UserID, &j.Lyrics, &j.Caption,
-		&j.Title, &j.Duration, &j.Seed, &j.Error, &j.Retries, &j.CreatedAt, &started,
+		&j.Idea, &j.Title, &j.Duration, &j.Seed, &j.Error, &j.Retries, &j.CreatedAt, &started,
 		&j.UpdatedAt); err != nil {
 		return err
 	}
@@ -478,21 +491,21 @@ func (s *Store) BumpRetries(id string) (int, error) {
 // make it idempotent — the worker may retry after a crash mid-finish.
 func (s *Store) CreateSong(g *Song) error {
 	_, err := s.db.Exec(
-		`INSERT OR IGNORE INTO songs (id, job_id, user_id, is_public, lyrics, caption,
+		`INSERT OR IGNORE INTO songs (id, job_id, user_id, is_public, lyrics, caption, idea,
 		  duration_s, seed, engine, delivery, audio_path, title, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		g.ID, g.JobID, owner(g.UserID), g.IsPublic, g.Lyrics, g.Caption, g.Duration, g.Seed,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		g.ID, g.JobID, owner(g.UserID), g.IsPublic, g.Lyrics, g.Caption, g.Idea, g.Duration, g.Seed,
 		g.Engine, g.Delivery, g.AudioPath, g.Title, g.CreatedAt.UTC())
 	return err
 }
 
 // songCols is the column list every Song read shares, so a new column can
 // never be added to one query and forgotten in another.
-const songCols = `id, job_id, user_id, is_public, lyrics, caption, duration_s, seed,
+const songCols = `id, job_id, user_id, is_public, lyrics, caption, idea, duration_s, seed,
 	engine, delivery, audio_path, title, created_at`
 
 func scanSong(sc interface{ Scan(...any) error }, g *Song) error {
-	return sc.Scan(&g.ID, &g.JobID, &g.UserID, &g.IsPublic, &g.Lyrics, &g.Caption,
+	return sc.Scan(&g.ID, &g.JobID, &g.UserID, &g.IsPublic, &g.Lyrics, &g.Caption, &g.Idea,
 		&g.Duration, &g.Seed, &g.Engine, &g.Delivery, &g.AudioPath, &g.Title, &g.CreatedAt)
 }
 

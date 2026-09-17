@@ -200,6 +200,7 @@ func songDraft(g *store.Song) map[string]any {
 		"title":   g.Title,
 		"lyrics":  g.Lyrics,
 		"caption": g.Caption,
+		"idea":    g.Idea,
 		"dur":     int(g.Duration),
 		"seed":    g.Seed,
 	}
