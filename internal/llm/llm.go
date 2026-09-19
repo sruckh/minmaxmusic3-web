@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -33,21 +34,64 @@ var (
 )
 
 // Draft is the parsed assistant output (stage 02 §B parsing contract).
+//
+// It is the union of what the two engines' assistants return, not a superset
+// invented here. MiniMax fills the first four from a JSON block; YuE2 fills the
+// style/lyrics pair from labelled text and adds Cot and Notes. A field an
+// engine has no concept of stays zero — AudioDur is 0 for YuE2 because YuE2 has
+// no duration parameter at all, and that 0 is meaningful rather than a default
+// standing in for one.
 type Draft struct {
 	Lyrics       string  `json:"input"`
 	Instructions string  `json:"instructions"`
 	AudioDur     float64 `json:"audio_duration"`
 	Seed         *int64  `json:"seed"`
+	// Cot is YuE2's symbolic-planning depth: full, melody or off. Empty means
+	// "whatever the worker does by default", which is the right answer for
+	// MiniMax, which has no such parameter.
+	Cot string `json:"cot,omitempty"`
+	// Notes are the assumptions the YuE2 assistant disclosed rather than asked
+	// about. Advisory only — they reach the panel and never the request.
+	Notes []string `json:"notes,omitempty"`
+}
+
+// Profile is one engine's assistant contract: the prompt to send it and the
+// reply format to expect back.
+//
+// The two engines are not interchangeable here. MiniMax's assistant answers
+// with a fenced JSON block and asks for a duration; YuE2's answers with
+// labelled plain text and forbids fences. Pairing the prompt with its parser
+// keeps that from being a runtime guess — the engine that was asked the
+// question is the engine whose format is expected.
+type Profile struct {
+	System string // verbatim system prompt
+	Parse  func(string) (*Draft, error)
 }
 
 type Client struct {
-	BaseURL         string
-	APIKey          string
-	Model           string
-	System          string // verbatim system prompt
+	BaseURL string
+	APIKey  string
+	Model   string
+	// Profiles is keyed by engine, matching how the worker and the server
+	// resolve their RunPod clients. A third engine is a map entry.
+	Profiles        map[string]Profile
 	Thinking        string // "disabled", "enabled", "off" (default "disabled")
 	ReasoningEffort string // "none", "low", "medium", "high" (default "none")
 	HC              *http.Client
+}
+
+// profile resolves the engine's assistant. A named engine with no usable
+// profile is a misconfiguration, not a reason to answer in the wrong format —
+// so it is reported rather than silently substituted.
+func (c *Client) profile(engine string) (Profile, error) {
+	p, ok := c.Profiles[engine]
+	if !ok || p.System == "" {
+		return Profile{}, ErrNoConfig
+	}
+	if p.Parse == nil {
+		p.Parse = ParseDraft
+	}
+	return p, nil
 }
 
 type ThinkingConfig struct {
@@ -82,11 +126,16 @@ type chatResponse struct {
 	} `json:"error"`
 }
 
-// Draft asks the assistant to turn a rough idea into form fields. One retry
-// on network error only (stage 02 §B).
-func (c *Client) Draft(ctx context.Context, idea string) (*Draft, error) {
-	if c.BaseURL == "" || c.APIKey == "" || c.Model == "" || c.System == "" {
+// Draft asks the assistant to turn a rough idea into form fields, using the
+// prompt and reply format belonging to engine. One retry on network error only
+// (stage 02 §B).
+func (c *Client) Draft(ctx context.Context, idea, engine string) (*Draft, error) {
+	if c.BaseURL == "" || c.APIKey == "" || c.Model == "" {
 		return nil, ErrNoConfig
+	}
+	prof, err := c.profile(engine)
+	if err != nil {
+		return nil, err
 	}
 	idea = strings.TrimSpace(idea)
 	if idea == "" {
@@ -99,7 +148,7 @@ func (c *Client) Draft(ctx context.Context, idea string) (*Draft, error) {
 	reqPayload := chatRequest{
 		Model: c.Model,
 		Messages: []message{
-			{Role: "system", Content: c.System},
+			{Role: "system", Content: prof.System},
 			{Role: "user", Content: idea},
 		},
 		MaxTokens:           maxTokens,
@@ -183,7 +232,7 @@ func (c *Client) Draft(ctx context.Context, idea string) (*Draft, error) {
 		content = cr.Choices[0].Message.Content
 		break
 	}
-	return ParseDraft(content)
+	return prof.Parse(content)
 }
 
 // chatURL appends the OpenAI chat path to the configured base URL. If the
@@ -379,4 +428,126 @@ func ParseDraft(content string) (*Draft, error) {
 	}
 
 	return nil, ErrUnparseable
+}
+
+// --- YuE2 assistant reply ----------------------------------------------------
+//
+// A different protocol, not a different wording. The MiniMax prompt asks for a
+// fenced JSON block; the YuE2 prompt asks for labelled plain text and forbids
+// fences outright. The two share no parsing code because they share no shape.
+
+// yue2Label matches a section label at the start of a line. Anchored with (?m)
+// so a label word inside the lyrics cannot open a section from the middle of a
+// line of sung text.
+var yue2Label = regexp.MustCompile(`(?m)^[ \t]*(STYLE|LYRICS|COT|NOTES):[ \t]*`)
+
+// yue2Bullet strips a list marker: "* ", "- ", "1. ", "1) ".
+//
+// It requires whitespace after the marker, or end of line. Without that, a note
+// that legitimately opens with a number — "2.5x tempo throughout" — would lose
+// its leading "2." to the ordered-list rule.
+var yue2Bullet = regexp.MustCompile(`^[ \t]*(?:[*\-•]+|\d+[.)])(?:[ \t]+|$)`)
+
+var yue2Cots = map[string]bool{"full": true, "melody": true, "off": true}
+
+// ParseYue2Draft reads the YuE2 assistant's labelled-block reply.
+//
+// Only STYLE is required. LYRICS is deliberately allowed to be empty: the
+// prompt instructs the assistant to leave it empty for an instrumental
+// request, so a parser demanding lyrics would reject the very draft the prompt
+// asked for.
+func ParseYue2Draft(content string) (*Draft, error) {
+	sections := splitYue2Sections(stripFences(stripThinking(content)))
+
+	style := firstLine(sections["STYLE"])
+	if style == "" {
+		return nil, ErrUnparseable
+	}
+	return &Draft{
+		Instructions: style,
+		Lyrics:       strings.TrimSpace(sections["LYRICS"]),
+		Cot:          normaliseCot(firstLine(sections["COT"])),
+		Notes:        parseBullets(sections["NOTES"]),
+	}, nil
+}
+
+// splitYue2Sections cuts the reply at each label, keying the text between one
+// label and the next. Slicing between labels rather than matching each label's
+// own value is what lets LYRICS be arbitrarily multi-line without the parser
+// needing to know where it ends — the next label says so.
+func splitYue2Sections(text string) map[string]string {
+	locs := yue2Label.FindAllStringSubmatchIndex(text, -1)
+	out := make(map[string]string, len(locs))
+	for i, m := range locs {
+		name := strings.ToUpper(text[m[2]:m[3]])
+		start := m[1]
+		end := len(text)
+		if i+1 < len(locs) {
+			end = locs[i+1][0]
+		}
+		out[name] = text[start:end]
+	}
+	return out
+}
+
+// firstLine is the value of a single-line field. STYLE and COT are each
+// specified as one line, so anything after the first is not part of the value.
+func firstLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[:i]
+	}
+	return strings.TrimSpace(s)
+}
+
+// normaliseCot returns one of the three values the worker understands, or
+// empty for anything else so the worker's own default applies.
+//
+// A malformed COT does not fail the draft. The style and lyrics are what the
+// user asked for, and discarding them over a stray value would cost more than
+// falling back to the default the worker would have chosen anyway.
+func normaliseCot(v string) string {
+	v = strings.ToLower(strings.TrimSpace(v))
+	if yue2Cots[v] {
+		return v
+	}
+	return ""
+}
+
+// parseBullets reads the NOTES list. The prompt specifies "* " markers, but a
+// model that reached for "- " or an ordered list is understood rather than
+// discarded — the content of an assumption matters more than its marker.
+func parseBullets(s string) []string {
+	var out []string
+	for _, line := range strings.Split(s, "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		line = strings.TrimSpace(yue2Bullet.ReplaceAllString(line, ""))
+		if line != "" {
+			out = append(out, line)
+		}
+	}
+	return out
+}
+
+// stripFences removes markdown code-fence lines.
+//
+// The YuE2 prompt forbids fences explicitly, and models add them anyway. This
+// exists precisely because that instruction is not reliably obeyed: a reply
+// that is otherwise perfectly formed should not be thrown away over a ``` the
+// prompt told it not to write. Only fence lines are dropped, never their
+// contents.
+func stripFences(text string) string {
+	if !strings.Contains(text, "```") {
+		return text
+	}
+	var b strings.Builder
+	for _, line := range strings.Split(text, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "```") {
+			continue
+		}
+		b.WriteString(line)
+		b.WriteByte('\n')
+	}
+	return b.String()
 }

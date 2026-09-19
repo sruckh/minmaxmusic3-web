@@ -186,6 +186,13 @@ func (s *Server) handleSongDetail(w http.ResponseWriter, r *http.Request) {
 	// control is never what stops a non-owner.
 	canEdit := s.owns(r, g)
 	data := map[string]any{"Page": "history", "Song": g, "CanEdit": canEdit}
+	// What the score's headers say about the music. Read from the stored score
+	// rather than from any column, because the score is the only place these
+	// are recorded — and it is what an edit would re-render from, so the two
+	// can never disagree. Empty for a MiniMax song, which has no score.
+	if g.ScoreABC != "" {
+		data["Score"] = scoreMetaOf(g.ScoreABC)
+	}
 	if canEdit {
 		data["Draft"] = songDraft(g)
 	}

@@ -47,7 +47,15 @@ func (s *Server) handleAssistant(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"empty-idea"}`, http.StatusBadRequest)
 		return
 	}
-	draft, err := s.llm.Draft(r.Context(), idea)
+	// The engine decides which prompt is sent and which reply format is
+	// expected, so an unrecognised value falls back to the original engine
+	// rather than erroring: a stale page or an edited form should still get a
+	// usable draft, and MiniMax is what every client meant before YuE2 existed.
+	engine := strings.TrimSpace(r.FormValue("engine"))
+	if _, ok := s.rps[engine]; !ok {
+		engine = store.EngineMiniMax
+	}
+	draft, err := s.llm.Draft(r.Context(), idea, engine)
 	if err != nil {
 		s.log.Warn("assistant", "err", err)
 		s.assistantError(w, err)
@@ -74,6 +82,75 @@ type jobForm struct {
 	Idea     string
 	Duration float64
 	Seed     *int64
+	// Engine is which model runs the song. The zero value is the original
+	// engine, so a submission from a page older than the selector still works.
+	Engine string
+	// Cot is YuE2's planning depth. Empty means the engine's own default.
+	Cot string
+	// Instrumental is the user asking for no vocals.
+	Instrumental bool
+}
+
+// There are deliberately no Key, Meter or Tempo controls here.
+//
+// They look like inputs and are not: YuE2's protocol has seven fields and none
+// of them is one of these, and folding them into the style string does not work
+// either. Measured — six jobs, three seeds per group, same lyrics:
+//
+//	control   tempo [71, 72, 75]   keys {Eb, Bb}   meters {4/4}
+//	tempo90   tempo [71, 72, 85]   keys {Eb, Bb}   meters {4/4}
+//
+// Two of the three seeds returned identical tempos with and without the hint,
+// and key and meter were ignored outright. The spread on the third was matched
+// by the control's own spread. Three controls that accept input, return a song,
+// and do nothing are worse than no controls, because a user would trust them.
+//
+// Evidence and the decision: the brain's "Key, Meter and Tempo — not inputs,
+// and the prompt hint does nothing". Read it before proposing them again.
+
+// scoreMetaOf reads the properties the ABC headers carry, for display.
+//
+// Display only, and that is the whole point: key, meter and tempo are things the
+// model *decides* when it writes a score, not things a caller sets. Putting them
+// in the style string does not control them (see the note on jobForm), and there
+// is no request field for them. So the only honest place to show them is here —
+// read back out of the score that was actually produced, the same way the
+// authors' own demo does it.
+// ScoreMeta is what a score's headers say about the music. Every field is a
+// string because all of them are optional: a MiniMax song has no score at all,
+// and a partial one would still be worth showing.
+type ScoreMeta struct {
+	Key   string
+	Meter string
+	Tempo string
+}
+
+// Any reports whether there is anything worth rendering.
+func (m ScoreMeta) Any() bool { return m.Key != "" || m.Meter != "" || m.Tempo != "" }
+
+func scoreMetaOf(abc string) ScoreMeta {
+	var m ScoreMeta
+	for _, line := range strings.Split(abc, "\n") {
+		line = strings.TrimSpace(line)
+		// The header block ends at the first music line; a "K:" inside a title
+		// or a comment after that point is not a header.
+		if line == "" || line[0] == '%' || strings.HasPrefix(line, "V:") {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(line, "K:"):
+			m.Key = strings.TrimSpace(line[2:])
+		case strings.HasPrefix(line, "M:"):
+			m.Meter = strings.TrimSpace(line[2:])
+		case strings.HasPrefix(line, "Q:"):
+			// Q:1/4=145 — the beat note and the value, of which only the value
+			// is worth showing.
+			if i := strings.IndexByte(line, '='); i >= 0 {
+				m.Tempo = strings.TrimSpace(line[i+1:])
+			}
+		}
+	}
+	return m
 }
 
 // maxTitle bounds a song title. Naming is optional, so this is only here to
@@ -117,6 +194,27 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 			f.Seed = &n
 		}
 	}
+	// Any engine this deployment does not actually hold clients for is treated
+	// as the original: the engine selector is rendered from the configured set,
+	// so an unknown value means a stale page or an edited form, and refusing
+	// the whole submission over it would be a worse answer than running it on
+	// the engine that has always been there.
+	f.Engine = strings.TrimSpace(r.FormValue("engine"))
+	if _, ok := s.rps[f.Engine]; !ok {
+		f.Engine = store.EngineMiniMax
+	}
+	// Only YuE2 plans symbolically. Any other value is normalised away rather
+	// than rejected: the parameter has a working default, and the engine that
+	// ignores it is the one that would receive it.
+	f.Cot = strings.TrimSpace(r.FormValue("cot"))
+	if f.Engine != store.EngineYue2 {
+		f.Cot = ""
+	}
+	// Instrumental is YuE2's alone — MiniMax has no such parameter and would
+	// ignore the flag while still singing whatever lyrics it was given, which
+	// is the worst of both. A checkbox reaches us only when ticked, so absence
+	// is the false case and needs no parsing.
+	f.Instrumental = f.Engine == store.EngineYue2 && r.FormValue("instrumental") != ""
 
 	if msg := validate(f); msg != "" {
 		s.renderJobError(w, http.StatusBadRequest, msg)
@@ -127,7 +225,9 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		ID: worker.NewJobID(), State: store.StateQueued,
 		UserID: s.caller(r).UserID,
 		Lyrics: f.Lyrics, Caption: f.Caption, Title: f.Title, Idea: f.Idea,
-		Duration: f.Duration, Seed: f.Seed, CreatedAt: time.Now().UTC(),
+		Duration: f.Duration, Seed: f.Seed,
+		Engine: f.Engine, Cot: f.Cot, Instrumental: f.Instrumental,
+		CreatedAt: time.Now().UTC(),
 	}
 	if err := s.st.CreateJob(j); err != nil {
 		s.renderJobError(w, http.StatusInternalServerError, "Could not queue the job — try again.")
@@ -137,9 +237,25 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 }
 
 // validate enforces blueprint §3.1–3.2. Field-level messages, no jargon.
+//
+// The two engines do not share a contract, so two rules are engine-dependent.
+// The original engine requires lyrics and a length; YuE2 has no duration
+// parameter at all, and permits an empty lyrics block to mean instrumental.
+// Applying either engine's rules to the other would reject valid input.
 func validate(f jobForm) string {
-	if f.Lyrics == "" {
+	yue2 := f.Engine == store.EngineYue2
+	// Lyrics are required unless the request is for an instrumental — and only
+	// YuE2 can be asked for one. MiniMax has no instrumental path at all, so a
+	// blank lyric box there is always a mistake rather than a choice.
+	if f.Lyrics == "" && !(yue2 && f.Instrumental) {
 		return "Add some lyrics first — or ask the assistant to draft them."
+	}
+	// Instrumental and lyrics are mutually exclusive: the worker refuses the
+	// flag alongside words rather than guessing which was meant, and a rejected
+	// job costs a round trip to say so. Caught here, in the form, where the
+	// user can still see which control to change.
+	if f.Instrumental && f.Lyrics != "" {
+		return "Instrumental is ticked, so the lyrics need to be empty — untick it to use your words."
 	}
 	if badTagLine(f.Lyrics) {
 		return "Every section tag like [Verse] needs its own line — the model drops text sharing a tag's line."
@@ -147,7 +263,10 @@ func validate(f jobForm) string {
 	if f.Caption == "" {
 		return "Add a style caption describing the music."
 	}
-	if f.Duration < 10 || f.Duration > 300 {
+	// Checked only for the engine that has the parameter: YuE2 derives length
+	// from the lyrics and the score it plans, so a duration bound would be a
+	// rule about a number YuE2 never receives.
+	if !yue2 && (f.Duration < 10 || f.Duration > 300) {
 		return "Pick a length between 10 and 300 seconds."
 	}
 	// A title is optional — left blank, the song is filed under a name taken

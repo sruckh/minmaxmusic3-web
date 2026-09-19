@@ -23,6 +23,27 @@
           </span>
         </div>
         <audio controls preload="metadata" src="/audio/{{.Song.ID}}"></audio>
+        {{with .Score}}{{if .Any}}
+        <!-- Read out of the score the model wrote, not from a setting. These
+             are the model's own choices: YuE2 has no request field for them and
+             putting them in the style line does not control them either. The
+             same three the authors' own demo displays, from the same source. -->
+        <div class="player-meta" style="margin-top:.75rem;">
+          {{if .Key}}<span>key {{.Key}}</span>{{end}}
+          {{if .Meter}}<span>{{.Meter}}</span>{{end}}
+          {{if .Tempo}}<span>{{.Tempo}} BPM</span>{{end}}
+        </div>
+        {{end}}{{end}}
+        {{if .Song.Truncated}}
+        <!-- Only shown when true. MiniMax never reports truncation, so on a
+             MiniMax song this is absent rather than a statement that the song
+             is complete. -->
+        <p class="help" style="color:var(--warn); margin-top:.75rem;">
+          This song is shorter than it was asked for — the model reached its limit
+          partway through. Generating again, or trimming the lyrics, may give a
+          complete take.
+        </p>
+        {{end}}
         <div style="display:flex;gap:.75rem;margin-top:.75rem;flex-wrap:wrap">
           <a class="btn btn--secondary" href="/audio/{{.Song.ID}}" download>Download M4A</a>
           {{if .CanEdit}}

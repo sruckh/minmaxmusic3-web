@@ -7,10 +7,21 @@
 // The draft is scoped per user and dropped on logout (see layout.html), so a
 // shared browser never hands one account's lyrics to the next.
 
-const MM3_DRAFT_FIELDS = ['idea', 'title', 'lyrics', 'caption', 'dur', 'seed', 'bpm', 'key', 'vocals'];
+const MM3_DRAFT_FIELDS = ['idea', 'title', 'lyrics', 'caption', 'dur', 'seed', 'bpm', 'key',
+  'vocals', 'engine', 'cot', 'instrumental'];
 
 function mm3Defaults() {
-  return { idea: '', title: '', lyrics: '', caption: '', dur: 30, seed: null, bpm: 96, key: 'C Major', vocals: true };
+  // engine: which model runs this song. Keys match the store's engine
+  //   constants; 'minimax' is the original and the fallback everywhere.
+  // cot: YuE2's symbolic-planning depth. '' means "engine default" — the value
+  //   is omitted from the request rather than guessed, so MiniMax (which has no
+  //   such parameter) and YuE2 (whose default is 'full') both get what they
+  //   expect from the same empty string.
+  // instrumental: YuE2 only, and a real request parameter — it asks the worker
+  //   for a wordless song. Kept in the draft because it is a choice the user
+  //   made, unlike the assistant's notes which describe one draft.
+  return { idea: '', title: '', lyrics: '', caption: '', dur: 30, seed: null, bpm: 96,
+           key: 'C Major', vocals: true, engine: 'minimax', cot: '', instrumental: false };
 }
 
 // window.MM3_USER is set by the head template; the empty name is the signed-out

@@ -78,6 +78,23 @@ const ownedBy = `(user_id = ? OR ?)`
 
 func (a Access) args() []any { return []any{a.UserID, a.Admin} }
 
+// Engines name the serverless model that will run a job. The worker resolves
+// the RunPod client and the request shape from this value, so a third engine
+// is a new constant and a new case rather than a new code path.
+const (
+	EngineMiniMax = "minimax"
+	EngineYue2    = "yue2"
+)
+
+// Generation modes. MiniMax has exactly one; YuE2 implements all three, and
+// the worker's run budget turns on which was chosen — a cover runs two
+// transcription subprocesses before it generates anything at all.
+const (
+	ModeCreate = "create"
+	ModeCover  = "cover"
+	ModeEdit   = "edit"
+)
+
 type Job struct {
 	ID       string
 	State    string
@@ -85,6 +102,37 @@ type Job struct {
 	UserID   string
 	Lyrics   string
 	Caption  string
+	// Engine and Mode select which endpoint runs this job and what it is asked
+	// to do. Both are resolved at submit time from what was stored, so a job's
+	// behaviour is fixed when it is queued and never re-read from configuration.
+	Engine string
+	Mode   string
+	// Cot is how much of the plan YuE2 writes before it generates: full,
+	// melody or off. Empty means "the worker's default", which is the honest
+	// value for MiniMax, which has no symbolic planning at all.
+	Cot string
+	// ABC is the score a YuE2 job generates from. For edit it is the revised
+	// score the user submitted; empty means the engine writes its own plan.
+	ABC string
+	// SourceAudio is the recording a cover job re-styles — either an external
+	// URL, or a presigned URL for an object this app holds. Empty for every
+	// other mode, and deliberately a URL rather than presigned bytes: the
+	// worker does not fetch it until the job reaches a GPU, which can be well
+	// after submission.
+	SourceAudio string
+	// SourceSongID is the song whose audio or score this job derives from, set
+	// when a cover or edit is started from the library rather than from an
+	// upload or a pasted URL. It travels on the job so the song it produces can
+	// record where it came from.
+	SourceSongID string
+	// Instrumental records that the user asked for no vocals.
+	//
+	// Stored rather than inferred from an empty lyric block, because the worker
+	// treats a lyrics field that is present-but-empty differently from one that
+	// is absent, and refuses the flag together with words. An inferred flag
+	// cannot tell "this song has no words" from "the words are not typed yet",
+	// and those want opposite requests.
+	Instrumental bool
 	// Idea is the free-text prompt the user gave the AI assistant, if any.
 	// It plays no role in generation — RunPod never sees it — it is carried
 	// through purely so History's "Edit in generator" can hand it back to
@@ -124,6 +172,32 @@ type Song struct {
 	Delivery  string
 	AudioPath string
 	Title     string
+	// Mode is the YuE2 mode that produced this song — create, cover or edit.
+	// MiniMax always writes "create" and has no other.
+	Mode string
+	// Cot is the symbolic-planning depth the song was generated with, as the
+	// worker reported it. Cover and edit override what was requested, so this
+	// records what was used rather than what was asked for — which is what
+	// "Edit in generator" needs to hand back to the form.
+	Cot string
+	// ScoreABC is the notation YuE2 planned before it synthesized anything,
+	// stored as content rather than as the presigned URL it arrived under.
+	// That URL expires in seven days, and edit mode consumes the score itself
+	// — so the URL would rot exactly where it is needed most. Empty for every
+	// MiniMax song.
+	ScoreABC string
+	// SourceSongID is the song this one was derived from: set by edit, whose
+	// score came from a prior song, and by a cover of this app's own audio.
+	// Provenance only — nothing reads it to build a request. Empty when the
+	// song came from nothing else.
+	SourceSongID string
+	// Truncated records that a generation stage hit its token cap, so this
+	// song is shorter or less complete than it was asked for.
+	//
+	// Stored because the alternative is that a cut-short song looks exactly
+	// like a finished one. The worker reports it; dropping it would only be
+	// recoverable by regenerating and comparing, which is not worth a GPU run.
+	Truncated bool
 	CreatedAt time.Time
 }
 
@@ -296,6 +370,29 @@ CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
 		// were never drafted from a recorded idea, which is exactly true.
 		{"jobs", "idea", `ALTER TABLE jobs ADD COLUMN idea TEXT NOT NULL DEFAULT ''`},
 		{"songs", "idea", `ALTER TABLE songs ADD COLUMN idea TEXT NOT NULL DEFAULT ''`},
+		// Every job that predates this column was a MiniMax create — that was
+		// the only engine and the only mode — so the defaults are not a guess,
+		// they are what those rows already mean. No backfill needed.
+		{"jobs", "engine", `ALTER TABLE jobs ADD COLUMN engine TEXT NOT NULL DEFAULT '` + EngineMiniMax + `'`},
+		{"jobs", "mode", `ALTER TABLE jobs ADD COLUMN mode TEXT NOT NULL DEFAULT '` + ModeCreate + `'`},
+		{"jobs", "abc", `ALTER TABLE jobs ADD COLUMN abc TEXT NOT NULL DEFAULT ''`},
+		// Empty means "the worker's default" — for MiniMax rows, and for every
+		// row that predates the column, that is the only truthful value.
+		{"jobs", "cot", `ALTER TABLE jobs ADD COLUMN cot TEXT NOT NULL DEFAULT ''`},
+		{"songs", "cot", `ALTER TABLE songs ADD COLUMN cot TEXT NOT NULL DEFAULT ''`},
+		{"jobs", "source_audio", `ALTER TABLE jobs ADD COLUMN source_audio TEXT NOT NULL DEFAULT ''`},
+		// False on existing rows: every job before this column was one the user
+		// gave words to, which is exactly what false says.
+		{"jobs", "instrumental", `ALTER TABLE jobs ADD COLUMN instrumental INTEGER NOT NULL DEFAULT 0`},
+		{"songs", "mode", `ALTER TABLE songs ADD COLUMN mode TEXT NOT NULL DEFAULT '` + ModeCreate + `'`},
+		// Empty on existing rows: no song generated before YuE2 existed has a
+		// score, which is exactly what the empty string says.
+		{"songs", "score_abc", `ALTER TABLE songs ADD COLUMN score_abc TEXT NOT NULL DEFAULT ''`},
+		{"songs", "source_song_id", `ALTER TABLE songs ADD COLUMN source_song_id TEXT NOT NULL DEFAULT ''`},
+		// False on existing rows. MiniMax never reported truncation, so for
+		// every song before this column the honest value is "not known to be
+		// truncated" — which is what displaying nothing on false means.
+		{"songs", "truncated", `ALTER TABLE songs ADD COLUMN truncated INTEGER NOT NULL DEFAULT 0`},
 	} {
 		has, err := s.hasColumn(c.table, c.col)
 		if err != nil {
@@ -331,11 +428,31 @@ func (s *Store) hasColumn(table, col string) (bool, error) {
 // CreateJob inserts a queued job owned by j.UserID (legacy when unset).
 func (s *Store) CreateJob(j *Job) error {
 	_, err := s.db.Exec(
-		`INSERT INTO jobs (id, state, user_id, lyrics, caption, idea, title, duration_s, seed, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO jobs (id, state, user_id, lyrics, caption, idea, title, duration_s, seed,
+		  engine, mode, cot, abc, source_audio, instrumental, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		j.ID, StateQueued, owner(j.UserID), j.Lyrics, j.Caption, j.Idea, j.Title, j.Duration, j.Seed,
+		engineOr(j.Engine), modeOr(j.Mode), j.Cot, j.ABC, j.SourceAudio, j.Instrumental,
 		j.CreatedAt.UTC(), j.CreatedAt.UTC())
 	return err
+}
+
+// engineOr and modeOr apply the same defaults the migration gives existing
+// rows. An empty engine would resolve to no RunPod client and fail the job at
+// submit time — long after the mistake — so the zero value is corrected at the
+// one place a job is inserted.
+func engineOr(v string) string {
+	if v == "" {
+		return EngineMiniMax
+	}
+	return v
+}
+
+func modeOr(v string) string {
+	if v == "" {
+		return ModeCreate
+	}
+	return v
 }
 
 // owner defaults an unset owner to the legacy user so the NOT NULL column
@@ -387,7 +504,8 @@ func (s *Store) FailJob(id, reason string) error {
 }
 
 const jobCols = `id, state, runpod_id, user_id, lyrics, caption, idea, title, duration_s,
-	seed, error, retries, created_at, started_at, updated_at`
+	seed, error, retries, created_at, started_at, updated_at, engine, mode, cot, abc,
+	source_audio, instrumental`
 
 func scanJob(sc interface{ Scan(...any) error }, j *Job) error {
 	// started_at is NULL until the job reaches a GPU, so it cannot scan
@@ -395,7 +513,7 @@ func scanJob(sc interface{ Scan(...any) error }, j *Job) error {
 	var started sql.NullTime
 	if err := sc.Scan(&j.ID, &j.State, &j.RunPodID, &j.UserID, &j.Lyrics, &j.Caption,
 		&j.Idea, &j.Title, &j.Duration, &j.Seed, &j.Error, &j.Retries, &j.CreatedAt, &started,
-		&j.UpdatedAt); err != nil {
+		&j.UpdatedAt, &j.Engine, &j.Mode, &j.Cot, &j.ABC, &j.SourceAudio, &j.Instrumental); err != nil {
 		return err
 	}
 	j.StartedAt = nil
@@ -492,21 +610,25 @@ func (s *Store) BumpRetries(id string) (int, error) {
 func (s *Store) CreateSong(g *Song) error {
 	_, err := s.db.Exec(
 		`INSERT OR IGNORE INTO songs (id, job_id, user_id, is_public, lyrics, caption, idea,
-		  duration_s, seed, engine, delivery, audio_path, title, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		  duration_s, seed, engine, delivery, audio_path, title, created_at,
+		  mode, cot, score_abc, source_song_id, truncated)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		g.ID, g.JobID, owner(g.UserID), g.IsPublic, g.Lyrics, g.Caption, g.Idea, g.Duration, g.Seed,
-		g.Engine, g.Delivery, g.AudioPath, g.Title, g.CreatedAt.UTC())
+		engineOr(g.Engine), g.Delivery, g.AudioPath, g.Title, g.CreatedAt.UTC(),
+		modeOr(g.Mode), g.Cot, g.ScoreABC, g.SourceSongID, g.Truncated)
 	return err
 }
 
 // songCols is the column list every Song read shares, so a new column can
 // never be added to one query and forgotten in another.
 const songCols = `id, job_id, user_id, is_public, lyrics, caption, idea, duration_s, seed,
-	engine, delivery, audio_path, title, created_at`
+	engine, delivery, audio_path, title, created_at, mode, cot, score_abc, source_song_id,
+	truncated`
 
 func scanSong(sc interface{ Scan(...any) error }, g *Song) error {
 	return sc.Scan(&g.ID, &g.JobID, &g.UserID, &g.IsPublic, &g.Lyrics, &g.Caption, &g.Idea,
-		&g.Duration, &g.Seed, &g.Engine, &g.Delivery, &g.AudioPath, &g.Title, &g.CreatedAt)
+		&g.Duration, &g.Seed, &g.Engine, &g.Delivery, &g.AudioPath, &g.Title, &g.CreatedAt,
+		&g.Mode, &g.Cot, &g.ScoreABC, &g.SourceSongID, &g.Truncated)
 }
 
 // Song returns a song the caller is allowed to see, or nil. A non-owner is

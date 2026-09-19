@@ -222,9 +222,6 @@
   .block {
     display: block;
   }
-  .contents {
-    display: contents;
-  }
   .hidden {
     display: none;
   }
@@ -266,13 +263,6 @@
   }
   .blur {
     --tw-blur: blur(8px);
-    filter: var(--tw-blur,) var(--tw-brightness,) var(--tw-contrast,) var(--tw-grayscale,) var(--tw-hue-rotate,) var(--tw-invert,) var(--tw-saturate,) var(--tw-sepia,) var(--tw-drop-shadow,);
-  }
-  .invert {
-    --tw-invert: invert(100%);
-    filter: var(--tw-blur,) var(--tw-brightness,) var(--tw-contrast,) var(--tw-grayscale,) var(--tw-hue-rotate,) var(--tw-invert,) var(--tw-saturate,) var(--tw-sepia,) var(--tw-drop-shadow,);
-  }
-  .filter {
     filter: var(--tw-blur,) var(--tw-brightness,) var(--tw-contrast,) var(--tw-grayscale,) var(--tw-hue-rotate,) var(--tw-invert,) var(--tw-saturate,) var(--tw-sepia,) var(--tw-drop-shadow,);
   }
   .transition {
@@ -663,6 +653,17 @@ textarea::placeholder, input::placeholder {
 textarea:focus, input:focus {
   border-color: var(--focus-ring);
 }
+.assistant-input {
+  min-height: 96px;
+  border-color: var(--ai);
+}
+.assistant-input:focus {
+  border-color: var(--focus-ring);
+  box-shadow: 0 0 0 3px var(--focus-ring);
+  @supports (color: color-mix(in lab, red, red)) {
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--focus-ring) 22%, transparent);
+  }
+}
 .charcount {
   font-family: var(--font-mono);
   font-size: 0.6875rem;
@@ -833,13 +834,16 @@ select {
   color: var(--text-primary);
   font-family: var(--font-mono);
   font-size: 0.8rem;
-  padding: 8px 10px;
+  padding: 8px 28px 8px 10px;
   cursor: pointer;
   appearance: none;
   background-image: linear-gradient(45deg, transparent 50%, var(--text-secondary) 50%), linear-gradient(135deg, var(--text-secondary) 50%, transparent 50%);
   background-position: calc(100% - 16px) center, calc(100% - 11px) center;
   background-size: 5px 5px, 5px 5px;
   background-repeat: no-repeat;
+}
+select.input {
+  width: 100%;
 }
 .seed-row {
   flex: 1;

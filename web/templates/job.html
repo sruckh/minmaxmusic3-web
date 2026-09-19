@@ -8,6 +8,12 @@
       <span>{{.Song.Engine}}</span>
     </div>
     <audio controls preload="metadata" src="/audio/{{.Song.ID}}"></audio>
+    {{if .Song.Truncated}}
+    <p class="help" style="color:var(--warn); margin-top:.75rem;">
+      This song is shorter than it was asked for — the model reached its limit
+      partway through.
+    </p>
+    {{end}}
     <div style="display:flex;gap:.75rem;margin-top:.75rem">
       <a class="btn btn--secondary" href="/audio/{{.Song.ID}}" download>Download M4A</a>
       <a class="btn btn--ghost" href="/history">In your library</a>
