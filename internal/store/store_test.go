@@ -1510,3 +1510,91 @@ func mustJob(t *testing.T, s *Store, id string) *Job {
 	}
 	return j
 }
+
+// --- cover links -------------------------------------------------------------
+
+// A cover link is what lets the RunPod worker fetch a recording without a
+// session, so the properties that matter are: the token is unguessable, only
+// its hash is stored, it expires, and it resolves to exactly one artifact.
+func TestCoverLinkMintResolveAndExpire(t *testing.T) {
+	s := openTemp(t)
+
+	token, err := s.CreateCoverLink(CoverLinkAudio, "song-abc", time.Hour)
+	if err != nil {
+		t.Fatalf("CreateCoverLink: %v", err)
+	}
+	if len(token) < MinTokenLen {
+		t.Errorf("token is %d chars, below the %d floor — too guessable", len(token), MinTokenLen)
+	}
+
+	kind, ref, err := s.CoverLink(token)
+	if err != nil {
+		t.Fatalf("CoverLink: %v", err)
+	}
+	if kind != CoverLinkAudio || ref != "song-abc" {
+		t.Errorf("resolved to (%q, %q), want (%q, song-abc)", kind, ref, CoverLinkAudio)
+	}
+
+	// Only the hash is stored, so the token cannot be read back out of the
+	// database — which is what makes a leaked row useless.
+	var stored string
+	if err := s.db.QueryRow(`SELECT token_hash FROM cover_links`).Scan(&stored); err != nil {
+		t.Fatalf("reading the row: %v", err)
+	}
+	if stored == token {
+		t.Error("the raw token is stored; a leaked database row would be a usable link")
+	}
+	if stored != hashToken(token) {
+		t.Error("the stored value is not the token's hash")
+	}
+
+	// An unknown token resolves to nothing rather than erroring, so a caller
+	// cannot tell "never existed" from "expired".
+	for _, bad := range []string{"", "short", strings.Repeat("b", 64)} {
+		if k, r, err := s.CoverLink(bad); err != nil || k != "" || r != "" {
+			t.Errorf("CoverLink(%q) = (%q, %q, %v), want empty", bad, k, r, err)
+		}
+	}
+
+	// A lapsed link stops resolving.
+	lapsed, err := s.CreateCoverLink(CoverLinkSource, "upload-1", time.Nanosecond)
+	if err != nil {
+		t.Fatalf("minting a short-lived link: %v", err)
+	}
+	if k, _, _ := s.CoverLink(lapsed); k != "" {
+		t.Error("an expired link still resolves")
+	}
+
+	// And the purge removes it, since nothing else would — unlike a job or a
+	// song, a link has no owner who might come back for it.
+	n, err := s.PurgeExpiredCoverLinks()
+	if err != nil {
+		t.Fatalf("PurgeExpiredCoverLinks: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("purged %d rows, want 1", n)
+	}
+	// The live one survives.
+	if k, _, _ := s.CoverLink(token); k == "" {
+		t.Error("the purge removed a live link")
+	}
+}
+
+// The kind is a closed set: a link is for audio or for an upload, and anything
+// else is a programming error rather than a link nobody can use.
+func TestCoverLinkRejectsUnknownKindAndBadTTL(t *testing.T) {
+	s := openTemp(t)
+
+	if _, err := s.CreateCoverLink("../../etc/passwd", "x", time.Hour); err == nil {
+		t.Error("an unknown kind was accepted")
+	}
+	if _, err := s.CreateCoverLink(CoverLinkAudio, "", time.Hour); err == nil {
+		t.Error("an empty reference was accepted")
+	}
+	if _, err := s.CreateCoverLink(CoverLinkAudio, "x", 0); err == nil {
+		t.Error("a zero ttl was accepted; a link dead on arrival is a bug")
+	}
+	if _, err := s.CreateCoverLink(CoverLinkAudio, "x", -time.Hour); err == nil {
+		t.Error("a negative ttl was accepted")
+	}
+}

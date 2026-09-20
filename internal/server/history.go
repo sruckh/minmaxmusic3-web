@@ -196,6 +196,10 @@ func (s *Server) handleSongDetail(w http.ResponseWriter, r *http.Request) {
 	if canEdit {
 		data["Draft"] = songDraft(g)
 	}
+	// Cover is YuE2's mode alone, and only the engine actually being offered can
+	// use it. Offering the panel under MiniMax would present a control that
+	// fails at the endpoint, which is the shape this project keeps rejecting.
+	data["CanCover"] = g.Engine == store.EngineYue2 && s.cfg.Yue2Enabled()
 	s.execute(w, "song.html", s.pageData(r, data))
 }
 

@@ -39,6 +39,10 @@ func (s *Server) registerFeatures(rt *router) {
 	// song is what the score and the defaults come from, and a form post that
 	// can silently become an edit is a form post that can edit the wrong song.
 	rt.handleFunc("POST /songs/{id}/edit", s.handleEditSong)
+	// The public half of the cover flow. Public because the RunPod worker has
+	// no session; the path token is the entire authorisation. See cover.go.
+	rt.handleFunc("GET /signed/{token}", s.handleSignedSource)
+	rt.handleFunc("POST /songs/{id}/cover", s.handleCoverSong)
 }
 
 // handleAssistant proxies the LLM and returns the parsed draft as JSON for

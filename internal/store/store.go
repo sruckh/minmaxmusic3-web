@@ -257,6 +257,78 @@ func hashToken(token string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// Kinds of thing a cover link can point at.
+const (
+	// CoverLinkAudio serves a song this app already holds, from its audio path.
+	CoverLinkAudio = "audio"
+	// CoverLinkSource serves an uploaded recording, staged for one cover.
+	CoverLinkSource = "source"
+)
+
+// CreateCoverLink mints a token for one artifact and records its hash.
+//
+// The token is returned in the clear exactly once, here — only the hash is
+// stored, so the link cannot be recovered from the database afterwards.
+func (s *Store) CreateCoverLink(kind, ref string, ttl time.Duration) (string, error) {
+	if kind != CoverLinkAudio && kind != CoverLinkSource {
+		return "", fmt.Errorf("store: unknown cover link kind %q", kind)
+	}
+	if ref == "" {
+		return "", errors.New("store: cover link needs a reference")
+	}
+	if ttl <= 0 {
+		return "", errors.New("store: cover link needs a positive ttl")
+	}
+	token, err := NewSessionToken()
+	if err != nil {
+		return "", err
+	}
+	now := time.Now().UTC()
+	_, err = s.db.Exec(
+		`INSERT INTO cover_links (token_hash, kind, ref, created_at, expires_at)
+		 VALUES (?, ?, ?, ?, ?)`,
+		hashToken(token), kind, ref, now, now.Add(ttl))
+	if err != nil {
+		return "", err
+	}
+	return token, nil
+}
+
+// CoverLink resolves a token to what it points at, or returns empty strings if
+// the token is unknown or has lapsed.
+//
+// Expiry is enforced on read rather than left to a sweep, for the same reason
+// sessions do it: a link is dead the moment it lapses, not at the next sweep.
+func (s *Store) CoverLink(token string) (string, string, error) {
+	if len(token) < MinTokenLen {
+		// Reject before the query: a hand-written or truncated token can never
+		// match a 64-character hash, so there is no need to ask.
+		return "", "", nil
+	}
+	var kind, ref string
+	err := s.db.QueryRow(
+		`SELECT kind, ref FROM cover_links WHERE token_hash = ? AND expires_at > ?`,
+		hashToken(token), time.Now().UTC()).Scan(&kind, &ref)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", "", nil
+	}
+	if err != nil {
+		return "", "", err
+	}
+	return kind, ref, nil
+}
+
+// PurgeExpiredCoverLinks drops lapsed rows. They are useless the moment they
+// expire, and nothing else would remove them — unlike a job or a song, a link
+// has no owner who might come back for it.
+func (s *Store) PurgeExpiredCoverLinks() (int64, error) {
+	res, err := s.db.Exec(`DELETE FROM cover_links WHERE expires_at <= ?`, time.Now().UTC())
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
 // Open creates the database and schema.
 func Open(path string) (*Store, error) {
 	db, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)")
@@ -347,6 +419,24 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_songs_job ON songs(job_id);
 CREATE INDEX IF NOT EXISTS idx_users_status ON users(status);
 CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
+-- Short-lived links the RunPod worker can fetch without a session.
+--
+-- The worker has no cookie, so a cover's source recording cannot go through
+-- the owner-scoped /audio route. Rather than give the app write access to the
+-- object store the worker already uses, the app serves the bytes it already
+-- holds under an unguessable, expiring token.
+--
+-- Keyed by the hash, like sessions: a leaked database row is not a usable
+-- link. The token is opaque — what it points at lives in the kind and ref
+-- columns, so the URL reveals nothing about the song it serves.
+CREATE TABLE IF NOT EXISTS cover_links (
+  token_hash TEXT PRIMARY KEY,
+  kind       TEXT NOT NULL,
+  ref        TEXT NOT NULL,
+  created_at TIMESTAMP NOT NULL,
+  expires_at TIMESTAMP NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_cover_links_expires_at ON cover_links(expires_at);
 `); err != nil {
 		return err
 	}
