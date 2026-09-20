@@ -159,11 +159,6 @@ func requestFor(j *store.Job) any {
 			// The worker's own default; sending it would only restate it.
 			mode = ""
 		}
-		// No words means instrumental, but only for create: a cover's lyrics
-		// come from the recording, so an empty field there means "transcribe
-		// them", not "no vocals". The two must not be conflated, because the
-		// worker rejects the contradiction of a flag and words together rather
-		// than guessing which was meant.
 		// The flag is stored, not inferred. An empty lyric box means "no words"
 		// only because the form says so; on its own it is equally consistent
 		// with "not typed yet", and the worker reads a present-but-empty lyrics

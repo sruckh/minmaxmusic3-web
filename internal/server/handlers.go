@@ -34,6 +34,11 @@ func (s *Server) registerFeatures(rt *router) {
 	rt.handleFunc("DELETE /songs/{id}", s.handleDeleteSong)
 	rt.handleFunc("POST /songs/{id}/title", s.handleUpdateSongTitle)
 	rt.handleFunc("POST /songs/{id}/toggle-public", s.handleToggleSongPublic)
+	// Editing spends GPU time, so it is rate-limited with generation — but it
+	// is its own route rather than a `mode` on POST /jobs, because the source
+	// song is what the score and the defaults come from, and a form post that
+	// can silently become an edit is a form post that can edit the wrong song.
+	rt.handleFunc("POST /songs/{id}/edit", s.handleEditSong)
 }
 
 // handleAssistant proxies the LLM and returns the parsed draft as JSON for
@@ -234,6 +239,163 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.renderJob(w, j)
+}
+
+// editForm is what an edit submission carries. Deliberately small: an edit
+// re-renders from the stored score, so the score is read from the source song
+// rather than posted back by the browser, and the arrangement is what actually
+// changes.
+type editForm struct {
+	Style  string
+	Lyrics string
+	Tempo  int
+}
+
+// maxTempo bounds the tempo control. The worker's own validator accepts any
+// integer in a Q: header, so this is a UI bound rather than a contract one —
+// it exists to keep a mistyped 9999 out of a score that would then be rejected
+// by the pipeline after a full model load.
+const (
+	minTempo = 20
+	maxTempo = 400
+)
+
+// handleEditSong re-renders an existing song from its stored score.
+//
+// The design follows what an edit can actually do. Editing re-renders the whole
+// song — YuE2 does not preserve the waveform outside the edited region — and
+// only tempo is a genuine performance change. Key does not re-key anything,
+// because ABC note tokens are relative, so changing K: respells the same letters
+// rather than transposing them. Meter is worse: changing M: makes the bars the
+// wrong length, and nothing catches it, because the worker validates score
+// *format* only and defers per-measure arithmetic to a tokenizer that cannot run
+// without a GPU.
+//
+// So the score travels from the stored copy, not from a text box, and the form
+// offers the three things that are honest: a new arrangement, a new tempo, and
+// new words.
+func (s *Server) handleEditSong(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad form", http.StatusBadRequest)
+		return
+	}
+	if !s.genAllowed(w, r, s.genLimiter, "generation") {
+		return
+	}
+
+	src, err := s.st.Song(r.PathValue("id"), s.caller(r))
+	if err != nil {
+		http.Error(w, "Could not load that song.", http.StatusInternalServerError)
+		return
+	}
+	// A song the caller cannot see must be indistinguishable from one that does
+	// not exist, or the route becomes a probe for other tenants' ids.
+	if src == nil || !s.owns(r, src) {
+		http.NotFound(w, r)
+		return
+	}
+	// Only a score-bearing song can be edited. A MiniMax song has no score, and
+	// an edit of nothing is not a request that can be honoured — saying so is
+	// better than queueing a job that would fail at the worker.
+	if strings.TrimSpace(src.ScoreABC) == "" {
+		s.renderJobError(w, http.StatusBadRequest,
+			"This song was not generated from a score, so there is nothing to edit. Generate a new version instead.")
+		return
+	}
+
+	var f editForm
+	f.Style = strings.TrimSpace(r.FormValue("instructions"))
+	f.Lyrics = strings.TrimSpace(r.FormValue("input"))
+	if v := strings.TrimSpace(r.FormValue("tempo")); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < minTempo || n > maxTempo {
+			s.renderJobError(w, http.StatusBadRequest,
+				fmt.Sprintf("Pick a tempo between %d and %d BPM.", minTempo, maxTempo))
+			return
+		}
+		f.Tempo = n
+	}
+
+	// Everything the form left blank falls back to what the song already has, so
+	// an edit that only changes the tempo does not silently blank the words.
+	style := f.Style
+	if style == "" {
+		style = src.Caption
+	}
+	lyrics := f.Lyrics
+	if lyrics == "" {
+		lyrics = src.Lyrics
+	}
+	if style == "" {
+		s.renderJobError(w, http.StatusBadRequest,
+			"Add a style describing the arrangement you want.")
+		return
+	}
+	// The worker requires words for an edit; only a cover may omit them. So an
+	// empty lyric block here is a mistake rather than an instrumental request,
+	// and it is caught before a job is queued for it.
+	if lyrics == "" {
+		s.renderJobError(w, http.StatusBadRequest,
+			"An edit needs lyrics — untick Instrumental, or write some.")
+		return
+	}
+
+	score := src.ScoreABC
+	if f.Tempo > 0 {
+		rewritten, ok := rewriteTempo(score, f.Tempo)
+		if !ok {
+			// A stored score the worker produced always carries Q:, so this
+			// means the row was edited by hand or predates the format. Better to
+			// say so than to queue an edit whose tempo silently did not apply.
+			s.renderJobError(w, http.StatusBadRequest,
+				"That song's score has no tempo to change. Try regenerating it.")
+			return
+		}
+		score = rewritten
+	}
+
+	j := &store.Job{
+		ID: worker.NewJobID(), State: store.StateQueued,
+		UserID: s.caller(r).UserID,
+		Lyrics: lyrics, Caption: style,
+		// The source's title is kept so the derived song is recognisable in the
+		// library without the user having to name it again.
+		Title: src.Title,
+		// The engine is the source's, not the form's: the score was written by
+		// that model, and offering it to another would be a mismatch the user
+		// never asked for.
+		Engine: src.Engine,
+		Mode:   store.ModeEdit,
+		// cot is left empty, which lets the worker's default ("full") apply.
+		// That is precisely what an edit means — full keeps the supplied
+		// harmony, where "off" plans nothing for the score to hang off.
+		ABC:          score,
+		SourceSongID: src.ID,
+		Duration:     src.Duration,
+		Seed:         src.Seed,
+		CreatedAt:    time.Now().UTC(),
+	}
+	if err := s.st.CreateJob(j); err != nil {
+		s.renderJobError(w, http.StatusInternalServerError, "Could not queue the edit — try again.")
+		return
+	}
+	s.renderJob(w, j)
+}
+
+// rewriteTempo replaces the Q: header, returning false when there is none.
+//
+// Only the tempo line is touched, byte for byte otherwise: the score is the
+// score, and an edit that quietly rewrote anything else would not be the edit
+// that was asked for.
+func rewriteTempo(abc string, bpm int) (string, bool) {
+	lines := strings.Split(abc, "\n")
+	for i, line := range lines {
+		if strings.HasPrefix(strings.TrimSpace(line), "Q:") {
+			lines[i] = fmt.Sprintf("Q:1/4=%d", bpm)
+			return strings.Join(lines, "\n"), true
+		}
+	}
+	return abc, false
 }
 
 // validate enforces blueprint §3.1–3.2. Field-level messages, no jargon.

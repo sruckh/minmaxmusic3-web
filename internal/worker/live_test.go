@@ -16,6 +16,7 @@ package worker
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -201,6 +202,219 @@ func TestLiveYuE2Create(t *testing.T) {
 			}
 		}
 	}
+}
+
+// TestLiveYuE2Edit is the same proof for edit mode: create a song, take the
+// score the worker planned, change its tempo, and re-render from it.
+//
+// Edit is the mode the app can support most cheaply — it needs no object
+// storage at all, since a score is a few kilobytes of text in a local column.
+// But its request path has never been in front of the live worker, and the
+// whole point of this probe is to find that out before a UI is built on it.
+func TestLiveYuE2Edit(t *testing.T) {
+	endpoint, key := liveEnv(t)
+	c := &runpod.Client{Endpoint: endpoint, APIKey: key}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Minute)
+	defer cancel()
+
+	// --- step 1: a create, to obtain a real score -------------------------
+	base := &store.Job{
+		Engine:  store.EngineYue2,
+		Mode:    store.ModeCreate,
+		Caption: "sparse piano ballad, close-mic vocal, 80 BPM",
+		Lyrics:  "[Verse]\nMorning light across the window pane\n[Chorus]\nStay a while",
+		Seed:    ptr(int64(24680)),
+	}
+	id := submitRetrying(t, ctx, c, requestFor(base), "create")
+	t.Logf("create accepted: %s", id)
+	out := waitForJob(t, ctx, c, id)
+	if out.AudioURL == "" {
+		t.Fatal("create produced no audio")
+	}
+	score, err := (&Worker{log: testLogger(t)}).fetch(ctx, out.ScoreABCURL)
+	if err != nil {
+		t.Fatalf("fetching the score to edit: %v", err)
+	}
+	before := scoreMetaOfForProbe(string(score))
+	t.Logf("create done: %s | score %d bytes | %s", before, len(score), headerOf(string(score)))
+
+	// --- step 2: edit it --------------------------------------------------
+	// The one edit that is genuinely a performance change. Key and meter are
+	// deliberately left alone: ABC note tokens are relative, so changing K:
+	// respells rather than transposes, and changing M: makes the bars the wrong
+	// length — which nothing validates, because the worker defers per-measure
+	// arithmetic to a tokenizer it cannot run without a GPU.
+	edited := retempo(string(score), 132)
+	if edited == string(score) {
+		t.Fatalf("the score had no Q: header to rewrite; headers were %s", headerOf(string(score)))
+	}
+
+	job := &store.Job{
+		Engine:  store.EngineYue2,
+		Mode:    store.ModeEdit,
+		Caption: "stripped-back piano, slower and closer",
+		Lyrics:  base.Lyrics,
+		ABC:     edited,
+		Seed:    ptr(int64(24680)),
+	}
+	req, _ := requestFor(job).(*runpod.Yue2Request)
+	pretty, _ := json.MarshalIndent(req, "", "  ")
+	t.Logf("editing with:\n%s", pretty)
+
+	id2 := submitRetrying(t, ctx, c, req, "edit")
+	t.Logf("edit accepted: %s", id2)
+	out2 := waitForJob(t, ctx, c, id2)
+
+	if out2.AudioURL == "" {
+		t.Fatal("edit produced no audio")
+	}
+	if out2.Mode != "edit" {
+		t.Errorf("worker reports mode %q, want edit", out2.Mode)
+	}
+	if out2.Duration <= 0 {
+		t.Errorf("Duration = %v, want positive", out2.Duration)
+	}
+	// The worker keeps the supplied harmony by forcing cot=full for an edit.
+	// If it came back as anything else, the score was not the one re-rendered.
+	if out2.Cot != "full" {
+		t.Errorf("Cot = %q, want full — an edit keeps the supplied harmony", out2.Cot)
+	}
+
+	data, err := (&Worker{log: testLogger(t)}).fetch(ctx, out2.AudioURL)
+	if err != nil {
+		t.Fatalf("fetching the edited audio: %v", err)
+	}
+	t.Logf("edited audio: %d bytes, container %q, %.1fs", len(data), string(data[:4]), out2.Duration)
+
+	// --- step 3: did the tempo actually change? ---------------------------
+	if out2.ScoreABCURL != "" {
+		b, err := (&Worker{log: testLogger(t)}).fetch(ctx, out2.ScoreABCURL)
+		if err != nil {
+			t.Errorf("fetching the edited score: %v", err)
+		} else {
+			after := scoreMetaOfForProbe(string(b))
+			t.Logf("edit done:  %s | %s", after, headerOf(string(b)))
+			t.Logf("tempo asked for 132; the edited score reports %s", after)
+			// Not asserted: the model re-plans, so this is information rather
+			// than a contract. Worth seeing whether Q: is honoured at all.
+		}
+	}
+}
+
+// submitRetrying submits, waiting out a refusal the worker would also wait out.
+//
+// RunPod answers 409 ENDPOINT_PAUSED whenever the endpoint has scaled to zero,
+// which it does between runs. The worker treats that as a definitive refusal and
+// requeues; a probe that called Submit once would simply fail, which says
+// nothing about the request it was trying to test. So this retries exactly what
+// IsRetryableSubmit allows — and nothing else, because a transport error might
+// have landed and submitting again could bill twice.
+func submitRetrying(t *testing.T, ctx context.Context, c *runpod.Client, req any, what string) string {
+	t.Helper()
+	deadline := time.Now().Add(20 * time.Minute)
+	for attempt := 1; ; attempt++ {
+		id, err := c.Submit(ctx, req)
+		if err == nil {
+			return id
+		}
+		if !runpod.IsRetryableSubmit(err) {
+			t.Fatalf("%s submit refused outright: %v", what, err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s still refused after 20 minutes: %v", what, err)
+		}
+		t.Logf("%s refused (attempt %d), waiting for capacity: %v", what, attempt, err)
+		select {
+		case <-ctx.Done():
+			t.Fatalf("context expired waiting for capacity on %s", what)
+		case <-time.After(30 * time.Second):
+		}
+	}
+}
+
+// waitForJob polls to a terminal state and decodes the output.
+func waitForJob(t *testing.T, ctx context.Context, c *runpod.Client, id string) *runpod.Output {
+	t.Helper()
+	deadline := time.Now().Add(35 * time.Minute)
+	var sr *runpod.StatusResponse
+	var err error
+	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			t.Fatalf("context expired waiting for %s", id)
+		case <-time.After(5 * time.Second):
+		}
+		sr, err = c.Status(ctx, id)
+		if err != nil {
+			continue
+		}
+		if sr.Status != runpod.StatusInQueue && sr.Status != runpod.StatusInProgress {
+			break
+		}
+	}
+	if sr == nil {
+		t.Fatalf("no status ever came back for %s", id)
+	}
+	if sr.Status != runpod.StatusCompleted {
+		t.Fatalf("%s did not complete: %s — %s", id, sr.Status, maskURLs(runpod.ErrorText(sr.Error)))
+	}
+	out, err := runpod.OutputOf(sr)
+	if err != nil {
+		t.Fatalf("OutputOf rejected a real completion: %v", err)
+	}
+	return out
+}
+
+// headerOf shows just the header block, so a probe's log stays readable.
+func headerOf(abc string) string {
+	var b strings.Builder
+	for _, line := range strings.Split(abc, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "V:") || strings.HasPrefix(line, "%") {
+			break
+		}
+		if line != "" {
+			b.WriteString(line)
+			b.WriteString(" ")
+		}
+	}
+	return strings.TrimSpace(b.String())
+}
+
+// scoreMetaOfForProbe mirrors server.scoreMetaOf, which is in another package.
+func scoreMetaOfForProbe(abc string) string {
+	var key, meter, tempo string
+	for _, line := range strings.Split(abc, "\n") {
+		line = strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(line, "K:") && key == "":
+			key = strings.TrimSpace(line[2:])
+		case strings.HasPrefix(line, "M:") && meter == "":
+			meter = strings.TrimSpace(line[2:])
+		case strings.HasPrefix(line, "Q:") && tempo == "":
+			if i := strings.IndexByte(line, '='); i >= 0 {
+				tempo = strings.TrimSpace(line[i+1:])
+			}
+		}
+	}
+	return "K=" + key + " M=" + meter + " Q=" + tempo
+}
+
+// retempo rewrites the Q: header, leaving everything else byte-identical.
+//
+// Tempo is the one edit that is unambiguously a performance change: nothing in
+// the score depends on it. Key and meter do not have that property, which is
+// why this probe does not touch them.
+func retempo(abc string, bpm int) string {
+	lines := strings.Split(abc, "\n")
+	for i, line := range lines {
+		if strings.HasPrefix(strings.TrimSpace(line), "Q:") {
+			lines[i] = fmt.Sprintf("Q:1/4=%d", bpm)
+			return strings.Join(lines, "\n")
+		}
+	}
+	return abc
 }
 
 func ptr[T any](v T) *T { return &v }

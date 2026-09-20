@@ -57,6 +57,61 @@
       </div>
     </div>
 
+    {{if and .CanEdit .Score.Any}}
+    <!-- Edit (re-render). Only on a song that has a score — a MiniMax song has
+         none, so there is nothing to re-render from.
+
+         Why there is no score text box: editing re-renders the whole song, and
+         only tempo is a genuine performance change. Key does not re-key
+         anything (ABC note tokens are relative, so K: respells rather than
+         transposes) and meter makes the bars the wrong length — which nothing
+         catches, because the worker validates score format only and defers
+         per-measure arithmetic to a tokenizer it cannot run without a GPU. A
+         free-text score field would therefore let someone silently wreck a
+         song, with no warning from us or the worker.
+
+         The score is read from the stored copy, never posted back. -->
+    <section class="panel" style="margin-bottom: calc(var(--unit)*2)"
+             x-data="{ open: false, tempo: {{with .Score}}{{.Tempo}}{{else}}0{{end}} }">
+      <div class="accordion-header" @click="open = !open" role="button" tabindex="0">
+        <span class="eyebrow"><span class="dot" style="background:var(--ai)"></span>EDIT</span>
+        <span class="accordion-toggle-icon" :class="{ 'open': open }">▼</span>
+      </div>
+
+      <div x-show="open" x-cloak>
+        <p class="help" style="margin-top:12px;">
+          Re-renders the whole song from its stored score with a new arrangement,
+          tempo or words. The waveform outside the change is <b>not</b> preserved —
+          this produces a new take, not a patch.
+        </p>
+        <form hx-post="/songs/{{.Song.ID}}/edit" hx-target="#edit-job" hx-swap="innerHTML"
+              style="margin-top:12px;">
+          <div class="field-group">
+            <label class="field-label" for="edit-instructions">Style</label>
+            <textarea class="input input-caption" id="edit-instructions" name="instructions" rows="3">{{.Song.Caption}}</textarea>
+          </div>
+          <div class="field-group">
+            <label class="field-label" for="edit-input">Lyrics</label>
+            <textarea class="input input-lyrics" id="edit-input" name="input" rows="8">{{.Song.Lyrics}}</textarea>
+          </div>
+          <div class="rack-row">
+            <span class="field-label">Tempo</span>
+            <!-- The one edit that is unambiguously a performance change. Key
+                 and meter are shown above, read-only, because they cannot be
+                 changed meaningfully. -->
+            <input type="number" class="input" name="tempo" x-model.number="tempo"
+                   min="20" max="400" style="width:auto;flex:0 1 110px;">
+            <span class="help">BPM — was {{with .Score}}{{.Tempo}}{{else}}unknown{{end}}</span>
+          </div>
+          <div style="margin-top:12px;">
+            <button type="submit" class="btn btn--primary">Re-render this song</button>
+          </div>
+        </form>
+        <div id="edit-job" style="margin-top:12px;"></div>
+      </div>
+    </section>
+    {{end}}
+
     <section class="panel" style="margin-bottom: calc(var(--unit)*2)">
       <span class="eyebrow"><span class="dot" style="background:var(--teal)"></span>LYRICS</span>
       <pre style="font-family:var(--font-mono); font-size:0.85rem; line-height:1.6; white-space:pre-wrap; color:var(--text-primary); margin-top:8px;">{{.Song.Lyrics}}</pre>

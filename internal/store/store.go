@@ -384,6 +384,9 @@ CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
 		// False on existing rows: every job before this column was one the user
 		// gave words to, which is exactly what false says.
 		{"jobs", "instrumental", `ALTER TABLE jobs ADD COLUMN instrumental INTEGER NOT NULL DEFAULT 0`},
+		// The song an edit or a library-sourced cover derives from. Empty on
+		// every existing row, and on every job that was not derived from one.
+		{"jobs", "source_song_id", `ALTER TABLE jobs ADD COLUMN source_song_id TEXT NOT NULL DEFAULT ''`},
 		{"songs", "mode", `ALTER TABLE songs ADD COLUMN mode TEXT NOT NULL DEFAULT '` + ModeCreate + `'`},
 		// Empty on existing rows: no song generated before YuE2 existed has a
 		// score, which is exactly what the empty string says.
@@ -429,11 +432,11 @@ func (s *Store) hasColumn(table, col string) (bool, error) {
 func (s *Store) CreateJob(j *Job) error {
 	_, err := s.db.Exec(
 		`INSERT INTO jobs (id, state, user_id, lyrics, caption, idea, title, duration_s, seed,
-		  engine, mode, cot, abc, source_audio, instrumental, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		  engine, mode, cot, abc, source_audio, instrumental, source_song_id, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		j.ID, StateQueued, owner(j.UserID), j.Lyrics, j.Caption, j.Idea, j.Title, j.Duration, j.Seed,
 		engineOr(j.Engine), modeOr(j.Mode), j.Cot, j.ABC, j.SourceAudio, j.Instrumental,
-		j.CreatedAt.UTC(), j.CreatedAt.UTC())
+		j.SourceSongID, j.CreatedAt.UTC(), j.CreatedAt.UTC())
 	return err
 }
 
@@ -505,7 +508,7 @@ func (s *Store) FailJob(id, reason string) error {
 
 const jobCols = `id, state, runpod_id, user_id, lyrics, caption, idea, title, duration_s,
 	seed, error, retries, created_at, started_at, updated_at, engine, mode, cot, abc,
-	source_audio, instrumental`
+	source_audio, instrumental, source_song_id`
 
 func scanJob(sc interface{ Scan(...any) error }, j *Job) error {
 	// started_at is NULL until the job reaches a GPU, so it cannot scan
@@ -513,7 +516,8 @@ func scanJob(sc interface{ Scan(...any) error }, j *Job) error {
 	var started sql.NullTime
 	if err := sc.Scan(&j.ID, &j.State, &j.RunPodID, &j.UserID, &j.Lyrics, &j.Caption,
 		&j.Idea, &j.Title, &j.Duration, &j.Seed, &j.Error, &j.Retries, &j.CreatedAt, &started,
-		&j.UpdatedAt, &j.Engine, &j.Mode, &j.Cot, &j.ABC, &j.SourceAudio, &j.Instrumental); err != nil {
+		&j.UpdatedAt, &j.Engine, &j.Mode, &j.Cot, &j.ABC, &j.SourceAudio, &j.Instrumental,
+		&j.SourceSongID); err != nil {
 		return err
 	}
 	j.StartedAt = nil
