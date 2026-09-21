@@ -30,12 +30,77 @@ func TestIndexPage(t *testing.T) {
 		t.Fatalf("GET / = %d", res.Code)
 	}
 	body := res.Body.String()
+	// Section tags are no longer rendered as buttons server-side: they ship as
+	// two JSON lists and the panel renders whichever the selected engine
+	// accepts. So the assertion is that both lists arrived, not that a tag
+	// appears as markup.
 	for _, want := range []string{`name="input"`, `name="instructions"`,
-		`name="audio_duration"`, `name="seed"`, "[Verse]", "/static/app.css",
+		`name="audio_duration"`, `name="seed"`, `name="engine"`, `name="cot"`,
+		`name="instrumental"`, "window.MM3_TAGS", "/static/app.css",
 		`hx-post="/jobs"`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("index missing %q", want)
 		}
+	}
+	// Both vocabularies reach the page: MiniMax's has tags YuE2 does not
+	// understand, and YuE2 has Interlude, which MiniMax's list lacks.
+	for _, tag := range []string{"Post-Chorus", "Interlude"} {
+		if !strings.Contains(body, tag) {
+			t.Errorf("index is missing the %q tag from one engine's list", tag)
+		}
+	}
+	// The JSON has to arrive as JSON. html/template escapes by context, and a
+	// JSON string that came out HTML-escaped would still contain the tag names
+	// above while being unparseable by the browser — so assert on the syntax,
+	// not on the words.
+	if !strings.Contains(body, `{"minimax":[`) {
+		t.Error("the tag JSON is not embedded unescaped; the panel could not read it")
+	}
+
+	// The engine is the first choice on the page. It decides which tags, which
+	// parameters and which style shape the rest of the form offers, so it has
+	// to come before the controls it governs — otherwise the user fills in a
+	// form for the wrong model and watches it change underneath them.
+	engineAt := strings.Index(body, "CH.01 — ENGINE")
+	lyricsAt := strings.Index(body, "CH.02 — LYRICS")
+	configAt := strings.Index(body, "CH.03 — CONFIGURATION")
+	if engineAt < 0 || lyricsAt < 0 || configAt < 0 {
+		t.Fatalf("section headings missing: engine=%d lyrics=%d config=%d",
+			engineAt, lyricsAt, configAt)
+	}
+	if !(engineAt < lyricsAt && lyricsAt < configAt) {
+		t.Errorf("sections are out of order: engine=%d lyrics=%d config=%d",
+			engineAt, lyricsAt, configAt)
+	}
+	// The selector itself must precede the first control it governs, not just
+	// its heading.
+	sel := strings.Index(body, `id="engine"`)
+	if sel < 0 || sel > lyricsAt {
+		t.Errorf("the engine selector is at %d, after the lyrics section at %d", sel, lyricsAt)
+	}
+
+	// The assistant panel sits BELOW the engine choice, so opening it cannot
+	// displace the engine. It used to be a sibling above the form: opening it
+	// pushed the engine down, and drafting closed it back up, rearranging the
+	// page under the user's cursor for no functional reason.
+	assistantAt := strings.Index(body, "AI ASSISTANT")
+	if assistantAt < 0 {
+		t.Fatal("the assistant panel is missing")
+	}
+	if assistantAt < engineAt {
+		t.Errorf("the assistant panel is at %d, above the engine section at %d — opening it would displace the engine",
+			assistantAt, engineAt)
+	}
+	if assistantAt > lyricsAt {
+		t.Errorf("the assistant panel is at %d, below the lyrics at %d", assistantAt, lyricsAt)
+	}
+	// And it is inside the form now, so its idea field submits directly rather
+	// than through a hidden mirror input.
+	if strings.Contains(body, `type="hidden" name="idea"`) {
+		t.Error("the hidden idea mirror is still present; the field is inside the form now")
+	}
+	if !strings.Contains(body, `id="idea"`) {
+		t.Error("the idea field is missing")
 	}
 }
 

@@ -144,6 +144,17 @@ func TestPublicAllowlistIsExactlyThis(t *testing.T) {
 		"GET /healthz",
 		"GET /login",
 		"GET /register",
+		// A cover's source recording, fetched by the RunPod worker.
+		//
+		// The worker has no session cookie, so this cannot be session-scoped.
+		// The path token is 32 random bytes, stored only as a SHA-256 hash,
+		// single-purpose (it serves exactly one file) and expires in two hours.
+		// A token that is unknown, lapsed, or too short to be real all answer
+		// the same 404, so the route cannot be used to probe which exist.
+		//
+		// The scope is deliberately this one pattern: the owner-scoped
+		// /audio/{id} stays session-only, and no broader prefix is opened.
+		"GET /signed/{token}",
 		"GET /static/",
 		"POST /login",
 		"POST /logout",

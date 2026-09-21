@@ -42,34 +42,38 @@ func GenerateTestWAV(sampleRate, channels, numSamples int) []byte {
 	return buf.Bytes()
 }
 
-// EncodeWAVToM4A transcodes raw WAV audio bytes into a stereo 192kbps AAC .m4a file.
-func EncodeWAVToM4A(ctx context.Context, wavData []byte, outPath string) error {
-	tmpFile, err := os.CreateTemp("", "mm3-transcode-*.wav")
+// EncodeAudioToM4A transcodes raw audio bytes into a stereo 192kbps AAC .m4a
+// file. MiniMax returns WAV and YuE2 returns 48 kHz FLAC; ffmpeg probes the
+// container rather than trusting the name, so both take this one path — which
+// is why the temp file is deliberately left without an extension.
+func EncodeAudioToM4A(ctx context.Context, audioData []byte, outPath string) error {
+	tmpFile, err := os.CreateTemp("", "mm3-transcode-*")
 	if err != nil {
-		return fmt.Errorf("creating temp wav file: %w", err)
+		return fmt.Errorf("creating temp audio file: %w", err)
 	}
 	tmpName := tmpFile.Name()
 	defer os.Remove(tmpName)
 
-	if _, err := tmpFile.Write(wavData); err != nil {
+	if _, err := tmpFile.Write(audioData); err != nil {
 		tmpFile.Close()
-		return fmt.Errorf("writing temp wav file: %w", err)
+		return fmt.Errorf("writing temp audio file: %w", err)
 	}
 	if err := tmpFile.Close(); err != nil {
-		return fmt.Errorf("closing temp wav file: %w", err)
+		return fmt.Errorf("closing temp audio file: %w", err)
 	}
 
-	return EncodeWAVFileToM4A(ctx, tmpName, outPath)
+	return EncodeAudioFileToM4A(ctx, tmpName, outPath)
 }
 
-// EncodeWAVFileToM4A converts a WAV file on disk to a stereo 192kbps AAC .m4a file using ffmpeg.
-func EncodeWAVFileToM4A(ctx context.Context, inWAVPath, outM4APath string) error {
+// EncodeAudioFileToM4A converts an audio file on disk to a stereo 192kbps AAC
+// .m4a file using ffmpeg, which detects the source format for itself.
+func EncodeAudioFileToM4A(ctx context.Context, inAudioPath, outM4APath string) error {
 	if err := os.MkdirAll(filepath.Dir(outM4APath), 0o750); err != nil {
 		return fmt.Errorf("creating output directory: %w", err)
 	}
 
 	var stderr bytes.Buffer
-	cmd := exec.CommandContext(ctx, "ffmpeg", "-y", "-i", inWAVPath, "-c:a", "aac", "-b:a", "192k", "-ac", "2", outM4APath)
+	cmd := exec.CommandContext(ctx, "ffmpeg", "-y", "-i", inAudioPath, "-c:a", "aac", "-b:a", "192k", "-ac", "2", outM4APath)
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {

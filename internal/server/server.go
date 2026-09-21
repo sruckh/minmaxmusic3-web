@@ -26,7 +26,11 @@ type Server struct {
 	log *slog.Logger
 	tpl *template.Template
 	st  *store.Store
-	rp  *runpod.Client
+	// rps holds one RunPod client per engine, keyed by the store's engine
+	// constants. A map rather than a field per engine, because the worker's
+	// dispatch is itself keyed by a job's engine — the lookup and the
+	// configuration stay the same shape, and a third engine is one entry.
+	rps map[string]*runpod.Client
 	llm *llm.Client
 	wk  *worker.Worker
 
@@ -74,23 +78,72 @@ func New(cfg *config.Config, log *slog.Logger) (*Server, error) {
 		// default one. Registration and the rest of the app still work.
 		log.Warn("administrator login disabled: ADMIN_USER and ADMIN_PASSWORD must both be set")
 	}
+	// YuE2 is registered only when its endpoint is configured. An engine with
+	// no client is one the worker refuses to submit, so registering it
+	// unconditionally would offer the user a choice that cannot run.
+	rps := map[string]*runpod.Client{
+		store.EngineMiniMax: {Endpoint: cfg.RunPodEndpoint, APIKey: cfg.RunPodAPIKey},
+	}
+	if cfg.Yue2Enabled() {
+		rps[store.EngineYue2] = &runpod.Client{Endpoint: cfg.Yue2Endpoint, APIKey: cfg.Yue2Key()}
+	}
 	return &Server{
 		cfg: cfg, log: log, tpl: tpl,
-		rp: &runpod.Client{Endpoint: cfg.RunPodEndpoint, APIKey: cfg.RunPodAPIKey},
+		rps: rps,
 		llm: &llm.Client{
 			BaseURL: cfg.LLMBaseURL, APIKey: cfg.LLMAPIKey, Model: cfg.LLMModelID,
 			Thinking: cfg.LLMThinking, ReasoningEffort: cfg.LLMReasoningEffort,
-			System: assistantPrompt(cfg),
+			// One assistant per engine, each paired with the reply format its
+			// prompt actually produces. Keyed by the store's engine constants —
+			// the same keys the RunPod clients and the worker use, so "which
+			// engine" has one vocabulary across the app.
+			Profiles: map[string]llm.Profile{
+				store.EngineMiniMax: {
+					System: assistantPrompt(cfg, "llm-assistant-system-prompt.md"),
+					Parse:  llm.ParseDraft,
+				},
+				store.EngineYue2: {
+					System: assistantPrompt(cfg, "llm-assistant-system-prompt-yue2.md"),
+					Parse:  llm.ParseYue2Draft,
+				},
+			},
 		},
 	}, nil
 }
 
-// assistantPrompt loads the system prompt verbatim (stage 02 §B); missing
-// file disables the assistant loudly.
-func assistantPrompt(cfg *config.Config) string {
-	b, err := os.ReadFile(filepath.Join(cfg.WebDir, "..", "shared", "llm-assistant-system-prompt.md"))
+// sectionTagsByEngine is the section-tag vocabulary each engine accepts.
+//
+// MiniMax's list is the one the form has always offered. YuE2's is the closed
+// set its system prompt names, and the order leads with the two it calls most
+// reliable so the likely choice sits leftmost.
+var sectionTagsByEngine = map[string][]string{
+	store.EngineMiniMax: {"Intro", "Verse", "Pre-Chorus", "Chorus",
+		"Post-Chorus", "Bridge", "Instrumental", "Solo", "Outro"},
+	store.EngineYue2: {"Verse", "Chorus", "Pre-Chorus", "Bridge",
+		"Intro", "Outro", "Interlude"},
+}
+
+// sectionTagsJSON is sectionTagsByEngine encoded for the template.
+//
+// A map of string slices cannot fail to marshal, so the error branch would be
+// unreachable; the panic states that rather than discarding a real error.
+var sectionTagsJSON = func() template.JS {
+	b, err := json.Marshal(sectionTagsByEngine)
 	if err != nil {
-		return "" // Draft() returns ErrNoConfig
+		panic("server: encoding section tags: " + err.Error())
+	}
+	return template.JS(b)
+}()
+
+// assistantPrompt loads one engine's system prompt verbatim (stage 02 §B).
+// A missing file leaves that engine's profile without a prompt, which makes
+// Draft() return ErrNoConfig for that engine alone — the other engine's
+// assistant keeps working, and the disabled one fails loudly rather than
+// answering in the wrong format.
+func assistantPrompt(cfg *config.Config, name string) string {
+	b, err := os.ReadFile(filepath.Join(cfg.WebDir, "..", "shared", name))
+	if err != nil {
+		return ""
 	}
 	return string(b)
 }
@@ -102,7 +155,7 @@ func (s *Server) Start() error {
 		return fmt.Errorf("opening store: %w", err)
 	}
 	s.st = st
-	s.wk = worker.New(st, s.rp, s.log, s.cfg.AudioDir, s.cfg.MaxInFlight)
+	s.wk = worker.New(st, s.rps, s.log, s.cfg.AudioDir, s.cfg.MaxInFlight)
 	return nil
 }
 
@@ -135,9 +188,21 @@ func (s *Server) Routes() http.Handler {
 		_, _ = w.Write([]byte("ok"))
 	})
 
-	tags := []string{"Intro", "Verse", "Pre-Chorus", "Chorus", "Post-Chorus",
-		"Bridge", "Instrumental", "Solo", "Outro"}
-	rt.handleFunc("GET /{$}", s.page("index.html", map[string]any{"Page": "index", "Tags": tags}))
+	// Tags are per engine, because the two do not accept the same vocabulary.
+	// MiniMax's prompt is written against Post-Chorus, Instrumental and Solo;
+	// YuE2's names a closed set and warns that only Verse and Chorus are
+	// reliable. Offering MiniMax's list under YuE2 would teach two tags the
+	// model has no concept of, and omit Interlude, which it does.
+	//
+	// Both lists are rendered once as JSON so the panel swaps them without a
+	// reload — the choice is a client-side toggle, and a round trip to re-render
+	// a row of buttons would be felt on every switch.
+	//
+	// The engine list itself is built from the clients the server actually
+	// holds, so the form can only offer an engine with an endpoint behind it.
+	rt.handleFunc("GET /{$}", s.page("index.html", map[string]any{
+		"Page": "index", "TagsJSON": sectionTagsJSON, "Yue2Enabled": s.cfg.Yue2Enabled(),
+	}))
 
 	s.registerAuth(rt)
 	s.registerFeatures(rt)

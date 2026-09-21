@@ -23,6 +23,27 @@
           </span>
         </div>
         <audio controls preload="metadata" src="/audio/{{.Song.ID}}"></audio>
+        {{with .Score}}{{if .Any}}
+        <!-- Read out of the score the model wrote, not from a setting. These
+             are the model's own choices: YuE2 has no request field for them and
+             putting them in the style line does not control them either. The
+             same three the authors' own demo displays, from the same source. -->
+        <div class="player-meta" style="margin-top:.75rem;">
+          {{if .Key}}<span>key {{.Key}}</span>{{end}}
+          {{if .Meter}}<span>{{.Meter}}</span>{{end}}
+          {{if .Tempo}}<span>{{.Tempo}} BPM</span>{{end}}
+        </div>
+        {{end}}{{end}}
+        {{if .Song.Truncated}}
+        <!-- Only shown when true. MiniMax never reports truncation, so on a
+             MiniMax song this is absent rather than a statement that the song
+             is complete. -->
+        <p class="help" style="color:var(--warn); margin-top:.75rem;">
+          This song is shorter than it was asked for — the model reached its limit
+          partway through. Generating again, or trimming the lyrics, may give a
+          complete take.
+        </p>
+        {{end}}
         <div style="display:flex;gap:.75rem;margin-top:.75rem;flex-wrap:wrap">
           <a class="btn btn--secondary" href="/audio/{{.Song.ID}}" download>Download M4A</a>
           {{if .CanEdit}}
@@ -35,6 +56,136 @@
         <div style="margin-top:.75rem">{{template "share-toggle.html" .}}</div>
       </div>
     </div>
+
+    {{if and .CanEdit .CanCover}}
+    <!-- Cover. YuE2 only — it is the only engine with the mode, so a MiniMax
+         song does not offer this at all rather than offering a control that
+         would fail at the endpoint.
+
+         Three ways to name the recording, collapsing to one thing: a URL the
+         worker can fetch. The song being viewed is the default, an upload
+         stages a file, and a pasted URL passes straight through. -->
+    <section class="panel" style="margin-bottom: calc(var(--unit)*2)"
+             x-data="{ open: false, source: 'this' }">
+      <div class="accordion-header" @click="open = !open" role="button" tabindex="0">
+        <span class="eyebrow"><span class="dot" style="background:var(--violet)"></span>COVER</span>
+        <span class="accordion-toggle-icon" :class="{ 'open': open }">▼</span>
+      </div>
+
+      <div x-show="open" x-cloak>
+        <p class="help" style="margin-top:12px;">
+          Re-records this song in a different style. YuE2 transcribes the melody
+          and the words from the recording, then generates a new version — so
+          this produces a different take, not an edit of this one.
+        </p>
+        <form hx-post="/songs/{{.Song.ID}}/cover" hx-target="#cover-job"
+              hx-swap="innerHTML" hx-encoding="multipart/form-data" style="margin-top:12px;">
+          <div class="field-group">
+            <label class="field-label" for="cover-instructions">Style for the cover</label>
+            <!-- Empty on purpose. A cover's point is a *different* style, so
+                 prefilling this song's own would work against it; the
+                 placeholder is the whole affordance. The handler requires a
+                 style, so an untouched form is refused rather than guessed at. -->
+            <textarea class="input input-caption" id="cover-instructions" name="instructions" rows="3"
+              placeholder="Jazz-funk, Rhodes piano, brushed drums"></textarea>
+          </div>
+
+          <div class="field-group">
+            <span class="field-label">Recording</span>
+            <div style="display:flex; gap:14px; flex-wrap:wrap; margin-top:4px;">
+              <label style="display:flex; gap:6px; align-items:center; cursor:pointer;">
+                <input type="radio" name="source_kind" value="this" x-model="source">
+                This song
+              </label>
+              <label style="display:flex; gap:6px; align-items:center; cursor:pointer;">
+                <input type="radio" name="source_kind" value="upload" x-model="source">
+                Upload a recording
+              </label>
+              <label style="display:flex; gap:6px; align-items:center; cursor:pointer;">
+                <input type="radio" name="source_kind" value="url" x-model="source">
+                Paste a link
+              </label>
+            </div>
+
+            <input type="file" name="source_upload" accept="audio/*" class="input"
+                   x-show="source === 'upload'" x-cloak style="margin-top:8px;">
+            <input type="url" name="source_url" class="input" placeholder="https://…"
+                   x-show="source === 'url'" x-cloak style="margin-top:8px;">
+          </div>
+
+          <div class="field-group">
+            <label class="field-label" for="cover-input">
+              Lyrics <span style="opacity:.6; font-weight:400">— optional</span>
+            </label>
+            <textarea class="input input-lyrics" id="cover-input" name="input" rows="6"
+              placeholder="Leave blank and the words are transcribed from the recording"></textarea>
+            <p class="help">
+              A listener usually knows the words better than a transcription does, so
+              anything you type here is used instead.
+            </p>
+          </div>
+
+          <button type="submit" class="btn btn--primary">Generate the cover</button>
+        </form>
+        <div id="cover-job" style="margin-top:12px;"></div>
+      </div>
+    </section>
+    {{end}}
+
+    {{if and .CanEdit .Score.Any}}
+    <!-- Edit (re-render). Only on a song that has a score — a MiniMax song has
+         none, so there is nothing to re-render from.
+
+         Why there is no score text box: editing re-renders the whole song, and
+         only tempo is a genuine performance change. Key does not re-key
+         anything (ABC note tokens are relative, so K: respells rather than
+         transposes) and meter makes the bars the wrong length — which nothing
+         catches, because the worker validates score format only and defers
+         per-measure arithmetic to a tokenizer it cannot run without a GPU. A
+         free-text score field would therefore let someone silently wreck a
+         song, with no warning from us or the worker.
+
+         The score is read from the stored copy, never posted back. -->
+    <section class="panel" style="margin-bottom: calc(var(--unit)*2)"
+             x-data="{ open: false, tempo: {{with .Score}}{{.Tempo}}{{else}}0{{end}} }">
+      <div class="accordion-header" @click="open = !open" role="button" tabindex="0">
+        <span class="eyebrow"><span class="dot" style="background:var(--ai)"></span>EDIT</span>
+        <span class="accordion-toggle-icon" :class="{ 'open': open }">▼</span>
+      </div>
+
+      <div x-show="open" x-cloak>
+        <p class="help" style="margin-top:12px;">
+          Re-renders the whole song from its stored score with a new arrangement,
+          tempo or words. The waveform outside the change is <b>not</b> preserved —
+          this produces a new take, not a patch.
+        </p>
+        <form hx-post="/songs/{{.Song.ID}}/edit" hx-target="#edit-job" hx-swap="innerHTML"
+              style="margin-top:12px;">
+          <div class="field-group">
+            <label class="field-label" for="edit-instructions">Style</label>
+            <textarea class="input input-caption" id="edit-instructions" name="instructions" rows="3">{{.Song.Caption}}</textarea>
+          </div>
+          <div class="field-group">
+            <label class="field-label" for="edit-input">Lyrics</label>
+            <textarea class="input input-lyrics" id="edit-input" name="input" rows="8">{{.Song.Lyrics}}</textarea>
+          </div>
+          <div class="rack-row">
+            <span class="field-label">Tempo</span>
+            <!-- The one edit that is unambiguously a performance change. Key
+                 and meter are shown above, read-only, because they cannot be
+                 changed meaningfully. -->
+            <input type="number" class="input" name="tempo" x-model.number="tempo"
+                   min="20" max="400" style="width:auto;flex:0 1 110px;">
+            <span class="help">BPM — was {{with .Score}}{{.Tempo}}{{else}}unknown{{end}}</span>
+          </div>
+          <div style="margin-top:12px;">
+            <button type="submit" class="btn btn--primary">Re-render this song</button>
+          </div>
+        </form>
+        <div id="edit-job" style="margin-top:12px;"></div>
+      </div>
+    </section>
+    {{end}}
 
     <section class="panel" style="margin-bottom: calc(var(--unit)*2)">
       <span class="eyebrow"><span class="dot" style="background:var(--teal)"></span>LYRICS</span>

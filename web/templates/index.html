@@ -2,44 +2,108 @@
 <html lang="en">
 <head>{{template "head" .}}</head>
 <body>
+<!-- Both engines' tag lists, so switching engine re-renders the row without a
+     round trip. Declared before the component so it is defined by the time
+     Alpine walks the tree. -->
+<script>window.MM3_TAGS = {{.TagsJSON}};</script>
 <div class="shell" x-data="mm3Page()">
   {{template "nav" .}}
 
-  <!-- AI assistant panel (progressive enhancement) -->
-  <section class="panel assistant-panel" style="margin-bottom: calc(var(--unit)*2)" x-show="showAssistant" x-cloak>
-    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-      <span class="eyebrow"><span class="dot" style="background:var(--violet)"></span>AI ASSISTANT</span>
-      <button type="button" class="icon-btn" @click="showAssistant = false" aria-label="Close assistant">✕</button>
-    </div>
-    <p style="font-size:0.85rem; color:var(--text-secondary); margin:0 0 12px 0;">Describe your song idea in plain English — the assistant drafts lyrics with section tags and a style caption for you.</p>
-    <div style="display:flex; gap:8px; flex-wrap:wrap;">
-      <textarea class="input" name="idea" x-model="idea" rows="2" style="flex:1; min-width:200px;"
-        placeholder="A bittersweet folk song about leaving a coastal town in the rain…"></textarea>
-      <button type="button" class="btn" @click="ask()" :disabled="thinking || !idea.trim()" style="align-self:flex-end;">
-        <span x-show="!thinking">Draft it</span>
-        <span x-show="thinking" x-cloak class="spin" aria-hidden="true"></span>
-        <span x-show="thinking" x-cloak>Drafting…</span>
-      </button>
-    </div>
-    <p class="help" style="color:var(--warn); margin-top:8px;" x-show="error" x-cloak x-text="error" role="alert"></p>
-  </section>
-
   <!-- Generation Form & Vertical Stack Accordion Layout -->
   <form id="gen" hx-post="/jobs" hx-target="#job" hx-swap="innerHTML">
-    <!-- The assistant textarea lives outside this form (it's a sibling panel,
-         shown/hidden independently), so its value needs a hidden mirror here
-         or it would never reach handleCreateJob on submit. -->
-    <input type="hidden" name="idea" x-model="idea">
     <main class="vertical-stack">
 
-      <!-- SECTION 1: LYRICS & STYLE (Accordion) -->
+      <!-- SECTION 1: ENGINE. First, because it decides what the rest of the
+           page offers — the two models do not accept the same section tags, the
+           same parameters or the same shape of style, so choosing the model is
+           what makes the remaining controls make sense. -->
+      <section class="panel">
+        <div class="accordion-header" @click="openEngine = !openEngine" role="button" tabindex="0">
+          <span class="eyebrow">
+            <span class="dot" style="background:var(--teal)"></span>CH.01 — ENGINE
+          </span>
+          <span class="accordion-toggle-icon" :class="{ 'open': openEngine }">▼</span>
+        </div>
+        <div class="accordion-body" x-show="openEngine" x-transition>
+          <div class="field-group" style="margin-top:12px;">
+            <label for="engine" class="field-label">Model</label>
+            <select id="engine" name="engine" x-model="engine" class="input">
+              <option value="minimax">MiniMax Music 3</option>
+              {{if .Yue2Enabled}}<option value="yue2">YuE2</option>{{end}}
+            </select>
+            <p class="help" x-show="engine !== 'yue2'">
+              Sings your tagged lyrics at a length you choose. The style caption is a
+              structured description — metadata, vocal character, arrangement.
+            </p>
+            <p class="help" x-show="engine === 'yue2'" x-cloak>
+              Plans the song as a score before writing any audio, and sets its own
+              length. The style is a single line, and the section tags it reads are a
+              narrower set.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <!-- AI assistant panel (progressive enhancement).
+
+           It sits BELOW the engine and above the lyrics, not at the top of the
+           page, because opening it must not displace the engine choice. It did
+           once — the panel was a sibling above the form, so opening it pushed
+           the engine down and drafting closed it back up, leaving the page
+           rearranged under the cursor for no functional reason.
+
+           Being inside the form is also what lets the idea field submit
+           directly: it used to live outside, with a hidden mirror input
+           carrying its value. One field, one home. -->
+      <section class="panel assistant-panel" x-show="showAssistant" x-cloak>
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+          <span class="eyebrow"><span class="dot" style="background:var(--violet)"></span>AI ASSISTANT</span>
+          <button type="button" class="icon-btn" @click="toggleAssistant(false)" aria-label="Close assistant">✕</button>
+        </div>
+        <!-- The copy names the model, because the two assistants are different
+             tools: same box, different prompt, different shape of answer. -->
+        <p style="font-size:0.85rem; color:var(--text-secondary); margin:0 0 12px 0;" x-show="engine !== 'yue2'">
+          Describe your song idea in plain English — the assistant drafts lyrics with section tags and a style caption for you.
+        </p>
+        <p style="font-size:0.85rem; color:var(--text-secondary); margin:0 0 12px 0;" x-show="engine === 'yue2'" x-cloak>
+          Describe your song idea in plain English — the assistant drafts a YuE2 style line, tagged lyrics, and a planning depth, and tells you what it assumed.
+        </p>
+        <label for="idea" class="field-label" style="display:block; margin-bottom:6px;">Your idea</label>
+        <div style="display:flex; gap:8px; flex-wrap:wrap;">
+          <!-- x-ref so the panel can put the cursor here the moment it opens. A
+               box that appears with no caret in it leaves the user hunting for
+               where to start typing. -->
+          <textarea x-ref="assistantInput" class="input assistant-input" id="idea" name="idea" x-model="idea" rows="3" style="flex:1; min-width:200px;"
+            placeholder="A bittersweet folk song about leaving a coastal town in the rain…"></textarea>
+          <button type="button" class="btn" @click="ask()" :disabled="thinking || !idea.trim()" style="align-self:flex-end;">
+            <span x-show="!thinking">Draft it</span>
+            <span x-show="thinking" x-cloak class="spin" aria-hidden="true"></span>
+            <span x-show="thinking" x-cloak>Drafting…</span>
+          </button>
+        </div>
+        <p class="help" style="color:var(--warn); margin-top:8px;" x-show="error" x-cloak x-text="error" role="alert"></p>
+
+        <!-- The YuE2 assistant discloses its assumptions instead of asking
+             about them, so the draft arrives with the reasoning behind it.
+             Advisory only: these never reach the request. -->
+        <div x-show="notes.length" x-cloak style="margin-top:12px; padding-top:12px; border-top:1px solid var(--border);">
+          <span class="field-label">Assumptions</span>
+          <ul style="margin:6px 0 0 0; padding-left:18px; font-size:0.85rem; color:var(--text-secondary);">
+            <template x-for="n in notes" :key="n">
+              <li x-text="n" style="margin-bottom:4px;"></li>
+            </template>
+          </ul>
+        </div>
+      </section>
+
+      <!-- SECTION 2: LYRICS & STYLE (Accordion) -->
       <section class="panel">
         <div class="accordion-header" @click="openLyrics = !openLyrics" role="button" tabindex="0">
           <span class="eyebrow">
-            <span class="dot" style="background:var(--teal)"></span>CH.01 — LYRICS &amp; STYLE
+            <span class="dot" style="background:var(--teal)"></span>CH.02 — LYRICS &amp; STYLE
           </span>
           <div style="display:flex; align-items:center; gap:12px;">
-            <button type="button" class="btn btn--ghost btn--sm" @click.stop="showAssistant = !showAssistant" style="padding:2px 8px; font-size:11px;">
+            <button type="button" class="btn btn--ghost btn--sm" @click.stop="toggleAssistant()" style="padding:2px 8px; font-size:11px;">
               ✨ Assistant
             </button>
             <!-- .stop, or clearing the form would also collapse the accordion. -->
@@ -65,27 +129,60 @@
             <div class="charcount"><span x-text="lyrics.length">0</span> chars</div>
           </div>
 
+          <!-- Tags come from the engine, swapped client-side. MiniMax's list
+               includes Post-Chorus, Instrumental and Solo; YuE2's prompt names a
+               closed set and warns only Verse and Chorus are reliable. Showing
+               one list for both would teach YuE2 tags it has no concept of. -->
           <div class="field-group">
             <span class="field-label">Section Tags</span>
             <div class="tags" role="group" aria-label="Section tags">
-              {{range $t := .Tags}}<button type="button" class="tag" data-tag="[{{ $t }}]"
-                onclick="insertTag(this)">{{ $t }}</button>{{end}}
+              <template x-for="t in tags" :key="t">
+                <button type="button" class="tag" :data-tag="'[' + t + ']'"
+                  @click="insertTag($el)" x-text="t"></button>
+              </template>
             </div>
+            <p class="help" x-show="engine === 'yue2'" x-cloak>
+              YuE2 reads a narrower set — Verse and Chorus are the most reliable.
+            </p>
           </div>
 
+          <!-- The label and the placeholder both change with the engine: the
+               two styles are different documents. MiniMax's is structured prose
+               in named sections; YuE2's is one comma-separated line, and
+               teaching it MiniMax's shape would produce a worse prompt. -->
           <div class="field-group">
-            <span class="field-label">Style Caption</span>
+            <span class="field-label" x-text="engine === 'yue2' ? 'Style' : 'Style Caption'">Style Caption</span>
             <textarea class="input input-caption" id="instructions" name="instructions" rows="6" x-model="caption"
-              placeholder="Global Metadata: acoustic pop, 96 BPM, C major, warm and intimate building to a wide final chorus.&#10;Vocal Details: soft female lead, close and breathy, stacked harmonies in the chorus.&#10;Arrangement: fingerpicked guitar and soft piano; brushed drums and upright bass enter at the chorus."></textarea>
+              :placeholder="stylePlaceholder"></textarea>
+            <p class="help" x-show="engine === 'yue2'" x-cloak>
+              One line: language, genre, mood, vocal character, instruments, tempo.
+              Production details belong here, never in the lyrics.
+            </p>
+
+            <!-- There are deliberately no Key, Meter or Tempo controls here.
+                 They read as inputs and are not: YuE2 has no request field for
+                 them, and folding them into the style line does not work
+                 either — measured over six jobs, two of three seeds returned
+                 identical tempos with and without the hint, and key and meter
+                 were ignored outright. Controls that accept input and do
+                 nothing are worse than absent, because a user would trust them.
+
+                 Instead the model's own choices are shown back on the song,
+                 read from the score it wrote. See scoreMetaOf in
+                 internal/server/handlers.go. -->
+            <p class="help" x-show="engine === 'yue2'" x-cloak style="margin-top:6px;">
+              YuE2 chooses the key, meter and tempo itself when it plans the score.
+              They appear on the finished song, read from the score it wrote.
+            </p>
           </div>
         </div>
       </section>
 
-      <!-- SECTION 2: CONFIGURATION SETTINGS (Accordion) -->
+      <!-- SECTION 3: CONFIGURATION SETTINGS (Accordion) -->
       <section class="panel">
         <div class="accordion-header" @click="openConfig = !openConfig" role="button" tabindex="0">
           <span class="eyebrow">
-            <span class="dot" style="background:var(--violet)"></span>CH.02 — CONFIGURATION
+            <span class="dot" style="background:var(--violet)"></span>CH.03 — CONFIGURATION
           </span>
           <span class="accordion-toggle-icon" :class="{ 'open': openConfig }">▼</span>
         </div>
@@ -93,15 +190,22 @@
         <div class="accordion-body" x-show="openConfig" x-transition>
           <div class="field-group" style="margin-top:12px;">
 
-            <!-- BPM Slider -->
-            <div class="rack-row">
+            <!-- BPM / Key / Vocals are MiniMax-scoped. They are also decorative
+                 for MiniMax — nothing sends them today — but hiding them under
+                 YuE2 at least stops the form implying they do something there.
+                 YuE2 has no such parameters at all. -->
+            <div class="rack-row" x-show="engine !== 'yue2'">
               <span class="field-label">BPM</span>
               <input type="range" id="bpm" min="60" max="180" value="96" x-model="bpm">
               <span class="bpm-value" x-text="bpm">96</span>
             </div>
 
-            <!-- Length Control (15s to 300s / 5m max with centered step input) -->
-            <div class="rack-row" style="flex-direction:column; align-items:stretch;">
+            <!-- Length Control (15s to 300s / 5m max with centered step input).
+                 Hidden under YuE2, which has no duration parameter at all: a
+                 song's length follows from the lyrics and the score the model
+                 plans. A slider that silently did nothing would be worse than
+                 no slider, so it is replaced by the reason it is gone. -->
+            <div class="rack-row" style="flex-direction:column; align-items:stretch;" x-show="engine !== 'yue2'">
               <div style="display:flex; justify-content:space-between; align-items:center;">
                 <span class="field-label">Length</span>
                 <span class="duration-display" x-text="formatDur(dur)">30s</span>
@@ -118,8 +222,18 @@
               </div>
             </div>
 
-            <!-- Key Dropdown -->
-            <div class="rack-row">
+            <!-- Length, explained rather than merely absent (YuE2 only). Sits
+                 where the slider would be, so the two swap in place. -->
+            <div class="rack-row" style="flex-direction:column; align-items:stretch;" x-show="engine === 'yue2'" x-cloak>
+              <span class="field-label">Length</span>
+              <p style="font-size:0.8rem; color:var(--text-secondary); margin:6px 0 0 0;">
+                YuE2 sets the length itself — it follows from your lyrics and the
+                score it plans before it writes any audio.
+              </p>
+            </div>
+
+            <!-- Key Dropdown (MiniMax only) -->
+            <div class="rack-row" x-show="engine !== 'yue2'">
               <span class="field-label">Key</span>
               <select id="key" x-model="key">
                 <option value="C Major">C Major</option>
@@ -131,11 +245,15 @@
               </select>
             </div>
 
-            <!-- Model Dropdown -->
-            <div class="rack-row">
-              <span class="field-label">Model</span>
-              <select id="model">
-                <option>MiniMax-Music3</option>
+            <!-- COT — YuE2 only. The assistant prefills it; the user can always
+                 override, because the choice visibly changes the output. -->
+            <div class="rack-row" style="flex-direction:column; align-items:stretch;" x-show="engine === 'yue2'" x-cloak>
+              <span class="field-label">Planning</span>
+              <select id="cot" name="cot" x-model="cot" style="margin-top:6px;">
+                <option value="">Auto — engine default (full)</option>
+                <option value="full">Full — plan melody and chords first</option>
+                <option value="melody">Melody — keep the melody, change the rest</option>
+                <option value="off">Off — quick draft, less editable</option>
               </select>
             </div>
 
@@ -150,14 +268,37 @@
               </div>
             </div>
 
-            <!-- Vocals Rocker Toggle -->
-            <div class="rack-row toggle-row">
+            <!-- Vocals Rocker Toggle (MiniMax only). YuE2's equivalent is
+                 Instrumental, below, which is a real parameter rather than a
+                 display toggle. -->
+            <div class="rack-row toggle-row" x-show="engine !== 'yue2'">
               <span class="field-label">Vocals</span>
               <div style="display:flex;align-items:center;">
                 <button type="button" class="toggle" id="vocals-toggle" :aria-pressed="vocals" @click="vocals = !vocals" :aria-label="vocals ? 'Vocals on' : 'Vocals off'"><span class="knob"></span></button>
                 <span class="toggle-label" x-text="vocals ? 'On' : 'Off'">On</span>
               </div>
             </div>
+
+            <!-- Instrumental — YuE2 only, and a real request parameter rather
+                 than display state. YuE2 has no instrumental mode upstream, so
+                 the worker fills the lyric slot with a wordless tag; the flag is
+                 what asks for that. It cannot travel with lyrics, so ticking it
+                 clears the box rather than letting the worker reject the pair. -->
+            <div class="rack-row toggle-row" x-show="engine === 'yue2'" x-cloak>
+              <span class="field-label">Instrumental</span>
+              <div style="display:flex;align-items:center;">
+                <input type="checkbox" id="instrumental" name="instrumental" x-model="instrumental"
+                       @change="instrumental && (lyrics = '')" style="width:auto;">
+                <label for="instrumental" class="toggle-label" style="margin-left:8px; cursor:pointer;"
+                       x-text="instrumental ? 'No vocals' : 'Vocal'">Vocal</label>
+              </div>
+            </div>
+            <p class="help" x-show="engine === 'yue2' && instrumental" x-cloak
+               style="margin-top:-6px; margin-bottom:12px;">
+              YuE2 has no instrumental mode — it will be asked to sing a wordless
+              section instead. Whether the result actually has no vocals is not
+              guaranteed.
+            </p>
 
           </div>
         </div>
@@ -169,7 +310,12 @@
 
         <div class="meter" id="meter" aria-hidden="true"></div>
 
-        <button type="submit" class="generate-btn" id="generate" :disabled="!lyrics.trim() || !caption.trim()">
+        <!-- YuE2 may be asked for instrumental music, where the assistant
+             leaves the lyrics empty by design — so an empty lyrics box blocks
+             generation on MiniMax, which has no instrumental path, but not on
+             YuE2. The style caption is required either way: it is what names
+             the music. -->
+        <button type="submit" class="generate-btn" id="generate" :disabled="!caption.trim() || (engine !== 'yue2' && !lyrics.trim())">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 4l14 8-14 8V4z" fill="currentColor" stroke="none"/></svg>
           <span id="generate-label">Generate</span>
         </button>
@@ -207,8 +353,40 @@ function mm3Page() {
   return {
     ...mm3Defaults(),
     showAssistant: false, thinking: false, error: '',
-    openLyrics: true, openConfig: true,
+    openEngine: true, openLyrics: true, openConfig: true,
     saveTimer: null,
+    // Assumptions the YuE2 assistant disclosed. Not part of the draft — they
+    // describe one draft, not the form, so they are not restored with it.
+    notes: [],
+
+    // The section tags the selected engine accepts. Both lists ship in the
+    // page, so switching engine re-renders the row without a round trip.
+    get tags() {
+      const byEngine = window.MM3_TAGS || {};
+      return byEngine[this.engine] || byEngine.minimax || [];
+    },
+
+    // The two styles are different documents, so the box says different things
+    // about each. MiniMax's is structured prose in named sections; YuE2's is a
+    // single comma-separated line.
+    get stylePlaceholder() {
+      if (this.engine === 'yue2') {
+        return 'City Pop, upbeat, groovy bass, electric guitar, neon city night — one line, comma-separated';
+      }
+      return 'Global Metadata: acoustic pop, 96 BPM, C major, warm and intimate building to a wide final chorus.&#10;Vocal Details: soft female lead, close and breathy, stacked harmonies in the chorus.&#10;Arrangement: fingerpicked guitar and soft piano; brushed drums and upright bass enter at the chorus.';
+    },
+
+    // Opening the panel puts the cursor in the box. A textarea that appears
+    // with no caret leaves the user looking for where to start.
+    toggleAssistant(show) {
+      this.showAssistant = show === undefined ? !this.showAssistant : show;
+      if (this.showAssistant) {
+        this.$nextTick(() => {
+          const el = this.$refs.assistantInput;
+          if (el) el.focus();
+        });
+      }
+    },
 
     init() {
       this.restore();
@@ -254,9 +432,12 @@ function mm3Page() {
       return `${s}s`;
     },
     async ask() {
-      this.thinking = true; this.error = '';
+      this.thinking = true; this.error = ''; this.notes = [];
       try {
-        const body = new URLSearchParams({ idea: this.idea });
+        // The engine selects the system prompt and the reply format server
+        // side, so it has to travel with the idea — the same words produce a
+        // different draft under each engine.
+        const body = new URLSearchParams({ idea: this.idea, engine: this.engine });
         const res = await fetch('/assistant', { method: 'POST', body });
         if (!res.ok) {
           const map = { 'assistant-timeout': 'The assistant took too long — try again in a minute.',
@@ -269,8 +450,15 @@ function mm3Page() {
         const d = await res.json();
         this.lyrics = d.input;
         this.caption = d.instructions;
+        // Falsy, not undefined: YuE2 has no duration parameter and answers 0,
+        // which must not be clamped to the 30s floor and shown as a choice the
+        // user never made. The length control is hidden under YuE2 anyway.
         if (d.audio_duration) this.dur = mm3ClampDur(d.audio_duration);
         if (d.seed != null) this.seed = d.seed;
+        // Present only on a YuE2 draft. An empty COT is left as-is so the
+        // engine applies its own default rather than a value invented here.
+        if (d.cot) this.cot = d.cot;
+        this.notes = d.notes || [];
         this.showAssistant = false;
       } catch { this.error = 'Network problem — try again.'; }
       finally { this.thinking = false; }

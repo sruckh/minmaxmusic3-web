@@ -345,6 +345,21 @@ input.input {
 textarea::placeholder, input::placeholder { color: var(--text-tertiary); }
 textarea:focus, input:focus { border-color: var(--focus-ring); }
 
+/* The assistant box is the first thing a user types into, and it opens on a
+   button press rather than by clicking the field — so it has to read as the
+   obvious next thing to use, not as another panel. It is taller than a normal
+   input, and carries the accent at rest as well as on focus, because the
+   caret alone was too quiet a signal. */
+.assistant-input {
+  min-height: 96px;
+  border-color: var(--ai);
+}
+
+.assistant-input:focus {
+  border-color: var(--focus-ring);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--focus-ring) 22%, transparent);
+}
+
 .charcount {
   font-family: var(--font-mono);
   font-size: 0.6875rem;
@@ -511,13 +526,24 @@ select {
   color: var(--text-primary);
   font-family: var(--font-mono);
   font-size: 0.8rem;
-  padding: 8px 10px;
+  /* Right padding clears the arrow below, which is painted from
+     calc(100% - 16px) across to about calc(100% - 6px). The old 10px let the
+     text run underneath it, so a long option overlapped the chevron. */
+  padding: 8px 28px 8px 10px;
   cursor: pointer;
   appearance: none;
   background-image: linear-gradient(45deg, transparent 50%, var(--text-secondary) 50%), linear-gradient(135deg, var(--text-secondary) 50%, transparent 50%);
   background-position: calc(100% - 16px) center, calc(100% - 11px) center;
   background-size: 5px 5px, 5px 5px;
   background-repeat: no-repeat;
+}
+
+/* A select used as a full-width form control, matching the text inputs above
+   it. The bare `select` rule sizes to its content, which is right inside the
+   flex `.rack-row`s (its `flex: 1` fills them) but leaves a field-group select
+   huddled around its longest option. */
+select.input {
+  width: 100%;
 }
 
 .seed-row { flex: 1; display: flex; gap: 8px; }

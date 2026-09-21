@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/sruckh/minmaxmusic3-web/internal/audio"
 	"github.com/sruckh/minmaxmusic3-web/internal/config"
+	"github.com/sruckh/minmaxmusic3-web/internal/llm"
 	"github.com/sruckh/minmaxmusic3-web/internal/store"
 )
 
@@ -29,6 +31,10 @@ type stubUpstream struct {
 	llmReply  string
 	LLMCalls  int
 	llmStatus int
+	// LLMBody is the last chat request the app sent. Which system prompt went
+	// out is otherwise invisible from the response — and the prompt, not just
+	// the parser, is what the engine selects.
+	LLMBody string
 	// RunPod side
 	runStatus  int // HTTP status for /run; 0 = 200
 	RunCalls   int
@@ -45,8 +51,11 @@ func newStubUpstream() *stubUpstream {
 }
 
 func (u *stubUpstream) serveLLM(w http.ResponseWriter, r *http.Request) {
+	body, _ := io.ReadAll(r.Body)
+
 	u.mu.Lock()
 	u.LLMCalls++
+	u.LLMBody = string(body)
 	reply, status := u.llmReply, u.llmStatus
 	u.mu.Unlock()
 	if status == 0 {
@@ -172,7 +181,13 @@ func newTestEnvWith(t *testing.T, tweak func(*config.Config)) (http.Handler, *st
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.llm.System = "test system prompt" // skip the shared/ file dependency
+	// Skip the shared/ file dependency: stand up a profile per engine, each
+	// paired with the parser its prompt would really produce, so a test that
+	// posts engine=yue2 exercises the YuE2 path rather than the MiniMax one.
+	s.llm.Profiles = map[string]llm.Profile{
+		store.EngineMiniMax: {System: "test minimax prompt", Parse: llm.ParseDraft},
+		store.EngineYue2:    {System: "test yue2 prompt", Parse: llm.ParseYue2Draft},
+	}
 	if err := s.Start(); err != nil {
 		t.Fatal(err)
 	}

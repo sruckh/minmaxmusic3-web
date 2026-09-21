@@ -46,6 +46,17 @@ var publicPatterns = []string{
 	"POST /logout",
 	"GET /static/",
 	"GET /favicon.ico",
+	// A cover's source recording, fetched by the RunPod worker.
+	//
+	// The worker has no cookie, so this cannot be session-scoped — the token in
+	// the path is the whole authorisation. It is 32 random bytes, stored only
+	// as a hash, single-purpose, and expires in two hours. Nothing is listed:
+	// an unknown or lapsed token is a plain 404, the same as one that never
+	// existed, so the route cannot be used to probe which tokens are real.
+	//
+	// Exactly this route and no broader prefix: the owner-scoped /audio/{id}
+	// stays session-only.
+	"GET /signed/{token}",
 }
 
 // adminPatterns demand an administrator. The prefix is registered even though
