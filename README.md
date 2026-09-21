@@ -245,7 +245,9 @@ Two things an operator should know:
 
 Also automatic, and also additive. The engine and mode columns arrive with defaults that state what the existing rows already mean — every job recorded before them was a MiniMax create, because that was the only engine and the only mode. No backfill, and nothing to re-run.
 
-Adding a second engine does not change the first. With `YUE2_RUNPOD_ENDPOINT` unset the selector shows MiniMax alone; with it set, a YuE2 song is a new row and the MiniMax library is untouched. The one operator-visible consequence is that `RUNPOD_API_KEY` must be able to reach the YuE2 endpoint — RunPod can scope keys to named endpoints, and a key without access answers `403` for that endpoint alone. `YUE2_RUNPOD_API_KEY` exists for that case.
+Adding a second engine does not change the first. With `YUE2_RUNPOD_ENDPOINT` unset the selector shows MiniMax alone; with it set, a YuE2 song is a new row and the MiniMax library is untouched.
+
+Both endpoints run under one RunPod account, and **the existing `RUNPOD_API_KEY` covers both** — there is nothing extra to configure beyond adding the endpoint URL. `YUE2_RUNPOD_API_KEY` exists only as an escape hatch: RunPod can scope a key to named endpoints, so if yours ever cannot reach YuE2 it answers `403` for that endpoint alone while continuing to work for MiniMax, and a key set here takes precedence.
 
 ---
 
@@ -305,9 +307,9 @@ Values marked *(Infisical)* have no default. They are stored in the Infisical pr
 | `LLM_THINKING` | `disabled` | LLM thinking mode (`disabled`, `enabled`, `off`). |
 | `LLM_REASONING_EFFORT` | `none` | LLM reasoning effort (`none`, `low`, `medium`, `high`). |
 | `RUNPOD_ENDPOINT` | *(Infisical)* | MiniMax RunPod serverless endpoint URL. |
-| `RUNPOD_API_KEY` | *(Infisical)* | RunPod authorization key. Both engines share one RunPod account, so this normally covers both. |
+| `RUNPOD_API_KEY` | *(Infisical)* | RunPod authorization key. Both endpoints run under one RunPod account, so this one key covers both. |
 | `YUE2_RUNPOD_ENDPOINT` | *(Infisical)* | YuE2 RunPod serverless endpoint URL. **Unset, the engine is simply not offered** — the selector shows MiniMax alone and nothing else changes. |
-| `YUE2_RUNPOD_API_KEY` | *(Infisical)* | Optional. Only needed if the shared `RUNPOD_API_KEY` cannot be granted the YuE2 endpoint — RunPod can scope a key to named endpoints, and a key without access answers `403` for that endpoint while working for the other. Set, it takes precedence. |
+| `YUE2_RUNPOD_API_KEY` | *(Infisical)* | Optional, and normally unnecessary — `RUNPOD_API_KEY` covers both endpoints. Set it only if your key is scoped to named endpoints and cannot reach YuE2; that shows up as a `403` for the YuE2 endpoint alone. Set, it takes precedence. |
 | `ADMIN_USER` | *(Infisical)* | **Required.** Static administrator login name. Blank disables administrator sign-in — see [Authentication & Administration](#authentication--administration). |
 | `ADMIN_PASSWORD` | *(Infisical)* | **Required.** Static administrator password, compared in constant time. Blank disables administrator sign-in. |
 
