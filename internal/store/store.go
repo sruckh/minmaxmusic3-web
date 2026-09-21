@@ -329,6 +329,28 @@ func (s *Store) PurgeExpiredCoverLinks() (int64, error) {
 	return res.RowsAffected()
 }
 
+// DeleteUserRow removes one account row, and nothing else.
+//
+// It exists for probes that create a throwaway account to exercise a path
+// requiring a real one, and must not be reached for from application code:
+// DeleteUser is the operator's path, and it takes the account's songs, jobs and
+// sessions with it. This leaves everything else alone, which is exactly why it
+// is wrong for anything but undoing a deliberate test fixture.
+func (s *Store) DeleteUserRow(id string) error {
+	_, err := s.db.Exec(`DELETE FROM users WHERE id = ?`, id)
+	return err
+}
+
+// DeleteSongRow removes one song row without unlinking its audio.
+//
+// The counterpart to DeleteUserRow, and for the same purpose: undoing a probe's
+// own fixture. DeleteSong is the operator's path and checks ownership, which a
+// probe has no particular need to satisfy when removing the row it just made.
+func (s *Store) DeleteSongRow(id string) error {
+	_, err := s.db.Exec(`DELETE FROM songs WHERE id = ?`, id)
+	return err
+}
+
 // Open creates the database and schema.
 func Open(path string) (*Store, error) {
 	db, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)")
