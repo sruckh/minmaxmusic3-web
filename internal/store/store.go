@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -265,6 +266,12 @@ const (
 	CoverLinkSource = "source"
 )
 
+// coverUploadDir is where the server stages uploaded recordings, relative to
+// the data volume. Duplicated here from the server package's sourceDir because
+// DeleteUser has to build absolute paths for the caller to unlink, and a store
+// method cannot ask a Server where its files are.
+const coverUploadDir = "/data/sources"
+
 // CreateCoverLink mints a token for one artifact and records its hash.
 //
 // The token is returned in the clear exactly once, here — only the hash is
@@ -321,12 +328,90 @@ func (s *Store) CoverLink(token string) (string, string, error) {
 // PurgeExpiredCoverLinks drops lapsed rows. They are useless the moment they
 // expire, and nothing else would remove them — unlike a job or a song, a link
 // has no owner who might come back for it.
+//
+// Expiry is already enforced on read, so an expired row is inert rather than
+// dangerous; this exists so the table does not grow without bound.
 func (s *Store) PurgeExpiredCoverLinks() (int64, error) {
 	res, err := s.db.Exec(`DELETE FROM cover_links WHERE expires_at <= ?`, time.Now().UTC())
 	if err != nil {
 		return 0, err
 	}
 	return res.RowsAffected()
+}
+
+// RecordCoverUpload attributes a staged recording to the account that made it.
+func (s *Store) RecordCoverUpload(name, userID string) error {
+	if name == "" {
+		return errors.New("store: cover upload needs a name")
+	}
+	_, err := s.db.Exec(
+		`INSERT OR REPLACE INTO cover_uploads (name, user_id, created_at) VALUES (?, ?, ?)`,
+		name, owner(userID), time.Now().UTC())
+	return err
+}
+
+// CoverUploadsByUser lists the staged recordings one account owns, so a
+// deletion can unlink them.
+func (s *Store) CoverUploadsByUser(userID string) ([]string, error) {
+	rows, err := s.db.Query(
+		`SELECT name FROM cover_uploads WHERE user_id = ? ORDER BY created_at`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var names []string
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			return nil, err
+		}
+		names = append(names, n)
+	}
+	return names, rows.Err()
+}
+
+// PurgeStaleCoverUploads drops records for staged recordings older than maxAge,
+// returning their names so the caller can unlink the files.
+//
+// A staged recording is only needed until the job referencing it has run, which
+// is bounded by the link's own lifetime plus the queue budget. Past that it is
+// an orphan: the job finished, or was never submitted, and nothing will ask for
+// those bytes again.
+func (s *Store) PurgeStaleCoverUploads(maxAge time.Duration) ([]string, error) {
+	cutoff := time.Now().UTC().Add(-maxAge)
+	rows, err := s.db.Query(`SELECT name FROM cover_uploads WHERE created_at <= ?`, cutoff)
+	if err != nil {
+		return nil, err
+	}
+	var names []string
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		names = append(names, n)
+	}
+	rows.Close() // the single sqlite connection cannot Exec while this is open
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(names) == 0 {
+		return nil, nil
+	}
+	if _, err := s.db.Exec(`DELETE FROM cover_uploads WHERE created_at <= ?`, cutoff); err != nil {
+		return nil, err
+	}
+	return names, nil
+}
+
+// PurgeCoverLinksFor drops links pointing at an artifact that is going away.
+//
+// Called when a song is deleted: without it its links would resolve to nothing
+// and sit in the table until they lapsed.
+func (s *Store) PurgeCoverLinksFor(kind, ref string) error {
+	_, err := s.db.Exec(`DELETE FROM cover_links WHERE kind = ? AND ref = ?`, kind, ref)
+	return err
 }
 
 // DeleteUserRow removes one account row, and nothing else.
@@ -459,6 +544,19 @@ CREATE TABLE IF NOT EXISTS cover_links (
   expires_at TIMESTAMP NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_cover_links_expires_at ON cover_links(expires_at);
+-- Recordings uploaded for a cover, and who uploaded them.
+--
+-- The bytes live under /data/sources; this row is what makes them
+-- attributable. Without it an upload has no owner anywhere — not in the path,
+-- and not in cover_links, which is a token store and expires — so deleting the
+-- account that made it left the file on disk forever with nothing able to find
+-- it again.
+CREATE TABLE IF NOT EXISTS cover_uploads (
+  name       TEXT PRIMARY KEY,
+  user_id    TEXT NOT NULL,
+  created_at TIMESTAMP NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_cover_uploads_user_id ON cover_uploads(user_id);
 `); err != nil {
 		return err
 	}
@@ -1151,7 +1249,40 @@ func (s *Store) DeleteUser(id string) ([]string, error) {
 	}
 	rows.Close() // the single sqlite connection cannot Exec while this is open
 
+	// Staged cover recordings belong to this account too, and their bytes need
+	// unlinking just as a song's do. Their names are collected here and
+	// returned alongside the audio paths; the rows go in the sweep below.
+	//
+	// Without this an upload had no owner recorded anywhere, so a deleted
+	// account left its file on disk forever with nothing able to find it.
+	uploadRows, err := tx.Query(`SELECT name FROM cover_uploads WHERE user_id = ?`, id)
+	if err != nil {
+		return nil, err
+	}
+	for uploadRows.Next() {
+		var n string
+		if err := uploadRows.Scan(&n); err != nil {
+			uploadRows.Close()
+			return nil, err
+		}
+		if n != "" {
+			paths = append(paths, filepath.Join(coverUploadDir, n))
+		}
+	}
+	uploadRows.Close()
+	if err := uploadRows.Err(); err != nil {
+		return nil, err
+	}
+
 	for _, q := range []string{
+		// The links this account's songs were served under. Matched by the
+		// song ids, which are read in the same statement — so the order of
+		// these deletes does not matter.
+		`DELETE FROM cover_links WHERE kind = 'audio' AND ref IN (SELECT id FROM songs WHERE user_id = ?)`,
+		// Links to this account's uploads, matched the same way. A link's ref
+		// is the stored name, which cover_uploads holds.
+		`DELETE FROM cover_links WHERE kind = 'source' AND ref IN (SELECT name FROM cover_uploads WHERE user_id = ?)`,
+		`DELETE FROM cover_uploads WHERE user_id = ?`,
 		`DELETE FROM songs WHERE user_id = ?`,
 		`DELETE FROM jobs WHERE user_id = ?`,
 		`DELETE FROM sessions WHERE user_id = ?`,

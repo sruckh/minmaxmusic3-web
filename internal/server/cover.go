@@ -166,6 +166,16 @@ func (s *Server) resolveCoverSource(r *http.Request, songID string) (string, str
 		if err != nil {
 			return "", "", err
 		}
+		// Attribute the file before returning its link. Without this the bytes
+		// have no owner anywhere — the path does not carry one and cover_links
+		// expires — so deleting the account would leave the file on disk
+		// forever with nothing able to find it.
+		if err := s.st.RecordCoverUpload(name, s.caller(r).UserID); err != nil {
+			// The file is already written; drop it rather than leave an
+			// untracked one behind, which is the exact state this prevents.
+			_ = os.Remove(filepath.Join(s.sourceDir(), name))
+			return "", "", err
+		}
 		link, err := s.mintCoverURL(store.CoverLinkSource, name)
 		if err != nil {
 			return "", "", err

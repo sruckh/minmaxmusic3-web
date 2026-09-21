@@ -1598,3 +1598,185 @@ func TestCoverLinkRejectsUnknownKindAndBadTTL(t *testing.T) {
 		t.Error("a negative ttl was accepted")
 	}
 }
+
+// --- cover cleanup -----------------------------------------------------------
+
+// Deleting a user must take the staged recordings they uploaded with them.
+//
+// The bytes live outside the database, so the row is what makes them findable.
+// Without it an upload had no owner anywhere — not in its path, and not in
+// cover_links, which is a token store and expires — so a deleted account left
+// the file on disk forever with nothing able to locate it.
+func TestDeleteUserReturnsStagedUploadsToUnlink(t *testing.T) {
+	s := openTemp(t)
+	u := mustCreateUser(t, s, testUser("u-uploader", "uploader"))
+	other := mustCreateUser(t, s, testUser("u-bystander", "bystander"))
+
+	if err := s.RecordCoverUpload("mine-a", u.ID); err != nil {
+		t.Fatalf("RecordCoverUpload: %v", err)
+	}
+	if err := s.RecordCoverUpload("mine-b", u.ID); err != nil {
+		t.Fatalf("RecordCoverUpload: %v", err)
+	}
+	// Somebody else's upload must survive.
+	if err := s.RecordCoverUpload("theirs", other.ID); err != nil {
+		t.Fatalf("RecordCoverUpload: %v", err)
+	}
+
+	paths, err := s.DeleteUser(u.ID)
+	if err != nil {
+		t.Fatalf("DeleteUser: %v", err)
+	}
+	got := map[string]bool{}
+	for _, p := range paths {
+		got[filepath.Base(p)] = true
+	}
+	for _, want := range []string{"mine-a", "mine-b"} {
+		if !got[want] {
+			t.Errorf("DeleteUser did not return %q to unlink; got %v", want, paths)
+		}
+	}
+	if got["theirs"] {
+		t.Error("DeleteUser returned another account's upload")
+	}
+
+	// And the rows are gone, so a later sweep will not try to reap them again.
+	left, err := s.CoverUploadsByUser(u.ID)
+	if err != nil {
+		t.Fatalf("CoverUploadsByUser: %v", err)
+	}
+	if len(left) != 0 {
+		t.Errorf("uploads survived the delete: %v", left)
+	}
+	if theirs, _ := s.CoverUploadsByUser(other.ID); len(theirs) != 1 {
+		t.Errorf("another account's upload was removed: %v", theirs)
+	}
+}
+
+// Links pointing at what a user owned go with the account. Otherwise they
+// resolve to nothing and sit in the table until they lapse.
+func TestDeleteUserDropsItsCoverLinks(t *testing.T) {
+	s := openTemp(t)
+	u := mustCreateUser(t, s, testUser("u-linker", "linker"))
+	other := mustCreateUser(t, s, testUser("u-keeper", "keeper"))
+
+	songID := "song-of-linker"
+	if err := s.CreateSong(&Song{
+		ID: songID, JobID: "j1", UserID: u.ID, Lyrics: "la", Caption: "pop",
+		Duration: 30, Engine: EngineYue2, Delivery: "s3", AudioPath: "/tmp/x.m4a",
+		Title: "t", CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("CreateSong: %v", err)
+	}
+	if err := s.RecordCoverUpload("upload-of-linker", u.ID); err != nil {
+		t.Fatalf("RecordCoverUpload: %v", err)
+	}
+
+	// One link of each kind for the user, and one belonging to somebody else.
+	if _, err := s.CreateCoverLink(CoverLinkAudio, songID, time.Hour); err != nil {
+		t.Fatalf("link: %v", err)
+	}
+	if _, err := s.CreateCoverLink(CoverLinkSource, "upload-of-linker", time.Hour); err != nil {
+		t.Fatalf("link: %v", err)
+	}
+	keepID := "song-of-keeper"
+	if err := s.CreateSong(&Song{
+		ID: keepID, JobID: "j2", UserID: other.ID, Lyrics: "la", Caption: "pop",
+		Duration: 30, Engine: EngineYue2, Delivery: "s3", AudioPath: "/tmp/y.m4a",
+		Title: "t", CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("CreateSong: %v", err)
+	}
+	if _, err := s.CreateCoverLink(CoverLinkAudio, keepID, time.Hour); err != nil {
+		t.Fatalf("link: %v", err)
+	}
+
+	if _, err := s.DeleteUser(u.ID); err != nil {
+		t.Fatalf("DeleteUser: %v", err)
+	}
+
+	n := func() int {
+		var c int
+		if err := s.db.QueryRow(`SELECT COUNT(*) FROM cover_links`).Scan(&c); err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+	// Exactly the bystander's link survives.
+	if n() != 1 {
+		t.Errorf("cover_links remaining = %d, want 1 (only the other account's)", n())
+	}
+}
+
+// A lapsed link is inert — expiry is enforced on read — so the purge is about
+// table growth rather than safety. It still has to actually run.
+func TestPurgeExpiredCoverLinks(t *testing.T) {
+	s := openTemp(t)
+
+	dead, err := s.CreateCoverLink(CoverLinkAudio, "gone", time.Nanosecond)
+	if err != nil {
+		t.Fatalf("minting: %v", err)
+	}
+	live, err := s.CreateCoverLink(CoverLinkAudio, "here", time.Hour)
+	if err != nil {
+		t.Fatalf("minting: %v", err)
+	}
+
+	n, err := s.PurgeExpiredCoverLinks()
+	if err != nil {
+		t.Fatalf("PurgeExpiredCoverLinks: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("purged %d rows, want 1", n)
+	}
+	if k, _, _ := s.CoverLink(dead); k != "" {
+		t.Error("the lapsed link survived the purge")
+	}
+	if k, _, _ := s.CoverLink(live); k == "" {
+		t.Error("the purge removed a live link")
+	}
+}
+
+// Staged recordings are reaped once their job is long over, and only then. The
+// TTL has to cover the link's own lifetime plus the queue budget, so a sweep
+// that ran too eagerly would delete a recording out from under a job that had
+// not yet reached a GPU.
+func TestPurgeStaleCoverUploadsRespectsTheWindow(t *testing.T) {
+	s := openTemp(t)
+	u := mustCreateUser(t, s, testUser("u-stager", "stager"))
+
+	if err := s.RecordCoverUpload("fresh", u.ID); err != nil {
+		t.Fatalf("RecordCoverUpload: %v", err)
+	}
+	if err := s.RecordCoverUpload("stale", u.ID); err != nil {
+		t.Fatalf("RecordCoverUpload: %v", err)
+	}
+	// Backdate one past the window.
+	if _, err := s.db.Exec(
+		`UPDATE cover_uploads SET created_at = ? WHERE name = ?`,
+		time.Now().UTC().Add(-48*time.Hour), "stale"); err != nil {
+		t.Fatalf("backdating: %v", err)
+	}
+
+	names, err := s.PurgeStaleCoverUploads(24 * time.Hour)
+	if err != nil {
+		t.Fatalf("PurgeStaleCoverUploads: %v", err)
+	}
+	if len(names) != 1 || names[0] != "stale" {
+		t.Fatalf("purged %v, want just [stale]", names)
+	}
+
+	left, _ := s.CoverUploadsByUser(u.ID)
+	if len(left) != 1 || left[0] != "fresh" {
+		t.Errorf("remaining uploads = %v, want [fresh]", left)
+	}
+
+	// Running it again finds nothing, so it is safe on a timer.
+	again, err := s.PurgeStaleCoverUploads(24 * time.Hour)
+	if err != nil {
+		t.Fatalf("second purge: %v", err)
+	}
+	if len(again) != 0 {
+		t.Errorf("the second sweep reaped %v; it is not idempotent", again)
+	}
+}

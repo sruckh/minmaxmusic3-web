@@ -131,13 +131,24 @@ type Worker struct {
 	// Zero means the package default; tests set it so a retry path does not
 	// make the suite wait out real backoff.
 	fetchBackoff time.Duration
+	// uploadDir is where the server stages uploaded cover recordings, so the
+	// janitor can unlink the stale ones. Passed in rather than derived: the
+	// worker holds no config, and the server already knows the answer.
+	uploadDir string
 }
 
 // New takes one client per engine, keyed by the store's engine constants. An
 // engine absent from the map is one that is not configured, and jobs naming it
 // fail with a reason rather than being posted to the wrong endpoint.
 func New(st *store.Store, clients map[string]*runpod.Client, log *slog.Logger, audioDir string, maxInFlight int) *Worker {
-	return &Worker{st: st, clients: clients, log: log, audioDir: audioDir, maxInFlight: maxInFlight}
+	return &Worker{
+		st: st, clients: clients, log: log, audioDir: audioDir, maxInFlight: maxInFlight,
+		// Sibling of the audio directory, matching the server's sourceDir. The
+		// worker reaps these files but never creates them, so this is the one
+		// place the two packages have to agree on a path — and it is a warning
+		// at worst if they ever disagree: a sweep that finds nothing to unlink.
+		uploadDir: filepath.Join(filepath.Dir(audioDir), "sources"),
+	}
 }
 
 // clientFor resolves the endpoint a job runs on. Returning nil is a real
@@ -221,6 +232,70 @@ func (w *Worker) Run(ctx context.Context) {
 			w.pollActive(ctx)
 			w.submitQueued(ctx)
 		}
+	}
+}
+
+// sweepEvery is how often expired cover links and stale staged uploads are
+// reaped. Neither is urgent — an expired link is already inert, since expiry is
+// enforced on read — so this only has to keep the table and the disk from
+// growing without bound, and an hour is far more often than that needs.
+const sweepEvery = time.Hour
+
+// uploadTTL is how long a staged recording is kept.
+//
+// It must cover the whole life of the job that references it: the link's own
+// lifetime (two hours) plus the queue budget (45 minutes), during which the
+// worker may not yet have fetched it. A day is comfortably past that, and is
+// the point after which the file is an orphan — its job has finished, or was
+// never submitted.
+const uploadTTL = 24 * time.Hour
+
+// RunJanitor reaps what nothing else will: lapsed cover links, and staged
+// recordings whose job is long over.
+//
+// It runs on its own slower ticker rather than inside the submit loop, because
+// neither task is time-critical and sweeping every two seconds would be work
+// for its own sake. Call in a goroutine, alongside Run.
+func (w *Worker) RunJanitor(ctx context.Context) {
+	// Once at startup, so a process that restarts often still makes progress
+	// rather than only ever sweeping if it happens to live an hour.
+	w.sweepOnce()
+
+	tick := time.NewTicker(sweepEvery)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+			w.sweepOnce()
+		}
+	}
+}
+
+func (w *Worker) sweepOnce() {
+	if n, err := w.st.PurgeExpiredCoverLinks(); err != nil {
+		w.log.Error("janitor: purging cover links", "err", err)
+	} else if n > 0 {
+		w.log.Info("janitor: purged expired cover links", "count", n)
+	}
+
+	names, err := w.st.PurgeStaleCoverUploads(uploadTTL)
+	if err != nil {
+		w.log.Error("janitor: purging staged uploads", "err", err)
+		return
+	}
+	for _, name := range names {
+		// The row is already gone, so a failure here leaves an orphan file with
+		// nothing pointing at it. Worth a warning, not a retry — there is no
+		// record left to retry from.
+		p := filepath.Join(w.uploadDir, filepath.Base(name))
+		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+			w.log.Warn("janitor: removing a staged upload", "name", name, "err", err)
+		}
+	}
+	if len(names) > 0 {
+		w.log.Info("janitor: removed staged uploads", "count", len(names))
 	}
 }
 

@@ -159,9 +159,14 @@ func (s *Server) Start() error {
 	return nil
 }
 
-// RunWorkers boots the background worker; it returns when ctx is done.
-// Call in a goroutine after Start.
+// RunWorkers boots the background worker and its janitor; it returns when ctx
+// is done. Call in a goroutine after Start.
 func (s *Server) RunWorkers(ctx context.Context) {
+	// Two loops, one lifecycle: the submit/poll loop needs a two-second tick,
+	// while reaping expired links and stale uploads is an hourly concern. They
+	// share this entry point so a caller cannot start one and forget the other,
+	// which is how the sweeps came to exist unwritten in the first place.
+	go s.wk.RunJanitor(ctx)
 	s.wk.Run(ctx)
 }
 
