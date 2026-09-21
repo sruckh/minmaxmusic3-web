@@ -76,7 +76,7 @@ The application is **multi-user and closed by default**: every route except sign
 - **Resilient parsing**: both parsers strip `<think>`/`<reasoning>` blocks and fold server-sent-event replies into a single message. The JSON parser then accepts closed code fences, unclosed code fences, or a raw object anywhere in the reply; the labelled parser slices between its labels, tolerates fences the prompt forbids, and normalises an unusable `COT` rather than discarding the whole draft.
 
 ### ⚡ RunPod Serverless GPU Inference
-- Asynchronous worker queue, **one client per configured engine**. MiniMax runs on [sruckh/minmaxmusic3-serverless](https://github.com/sruckh/minmaxmusic3-serverless); YuE2 runs on its own serverless worker, which is a private repository and is deliberately not linked from here. Both endpoints share one RunPod account and API key.
+- Asynchronous worker queue, **one client per configured engine**: [sruckh/minmaxmusic3-serverless](https://github.com/sruckh/minmaxmusic3-serverless) for MiniMax and [sruckh/Yue2-runpod](https://github.com/sruckh/Yue2-runpod) for YuE2. Both endpoints run under one RunPod account and share its API key.
 - Handles job queueing, polling, and audio file downloading with automatic error handling.
 - **Per-mode time budgets.** A YuE2 cover transcribes the recording with two model families before it generates anything, so it gets a far longer leash than a create — a single flat budget would kill it mid-transcription and report a timeout for work that was progressing normally.
 - **A completed generation is not discarded over a transient failure.** Artifact downloads retry with backoff, and a storage error leaves the job alive for the next poll instead of failing it.
