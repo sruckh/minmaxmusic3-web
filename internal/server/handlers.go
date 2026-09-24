@@ -3,6 +3,7 @@ package server
 import (
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"net/http"
 	"strconv"
 	"strings"
@@ -264,6 +265,53 @@ const (
 	maxTempo = 400
 )
 
+// styleStrengths are the guidance presets cover and edit offer, sent to YuE2
+// as cfg_scale. Named presets rather than a number, because the usable range
+// is narrow and was found by listening, not derived:
+//
+//   - off sends nothing, so the worker runs one unguided branch. A cover of a
+//     rock ballad asked for 80s synth-pop came back sounding like the original.
+//   - balanced (3) took on the synth sound with every word intact.
+//   - strong (4.5) sits between the two measured points. At 6 the same cover
+//     slurred, dropped words and finished 12 s short, so the preset stops
+//     well below that — and the form says it may slur.
+var styleStrengths = map[string]*float64{
+	"off":      nil,
+	"balanced": ptrTo(3.0),
+	"strong":   ptrTo(4.5),
+}
+
+func ptrTo[T any](v T) *T { return &v }
+
+// styleStrengthOf reads the form's style strength, falling back to the mode's
+// default when the field is absent. An unrecognised value is an error rather
+// than a silent default: it means an edited form, and guessing would queue a
+// paid job the user did not ask for.
+func styleStrengthOf(r *http.Request, fallback string) (*float64, error) {
+	v := strings.TrimSpace(r.FormValue("style_strength"))
+	if v == "" {
+		v = fallback
+	}
+	scale, ok := styleStrengths[v]
+	if !ok {
+		return nil, errors.New("Pick a style strength: off, balanced or strong.")
+	}
+	return scale, nil
+}
+
+// seedFor is the source song's seed, unless the form asked for a new one.
+//
+// Copying the seed is the default because it is what keeps a derived song a
+// variation of its source. But with the melody locked too, a copied seed
+// leaves the user no way to ask for a different take, which is what the
+// checkbox is for. The range is the worker's: [0, 2**63).
+func seedFor(r *http.Request, src *store.Song) *int64 {
+	if r.FormValue("new_seed") == "" {
+		return src.Seed
+	}
+	return ptrTo(rand.Int64())
+}
+
 // handleEditSong re-renders an existing song from its stored score.
 //
 // The design follows what an edit can actually do. Editing re-renders the whole
@@ -318,6 +366,13 @@ func (s *Server) handleEditSong(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		f.Tempo = n
+	}
+	// Off unless asked: guidance on an edit has not been listened to yet, and
+	// an edit's point is usually new words or tempo rather than a new sound.
+	scale, err := styleStrengthOf(r, "off")
+	if err != nil {
+		s.renderJobError(w, http.StatusBadRequest, err.Error())
+		return
 	}
 
 	// Everything the form left blank falls back to what the song already has, so
@@ -376,7 +431,8 @@ func (s *Server) handleEditSong(w http.ResponseWriter, r *http.Request) {
 		ABC:          score,
 		SourceSongID: src.ID,
 		Duration:     src.Duration,
-		Seed:         src.Seed,
+		Seed:         seedFor(r, src),
+		CfgScale:     scale,
 		CreatedAt:    time.Now().UTC(),
 	}
 	if err := s.st.CreateJob(j); err != nil {

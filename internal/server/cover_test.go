@@ -428,3 +428,97 @@ func TestCoverPanelAppearsOnlyWhereItCanWork(t *testing.T) {
 		t.Error("the cover panel appeared with no YuE2 endpoint configured")
 	}
 }
+
+// A cover is guided by default, because unguided the transcribed melody wins:
+// a rock ballad covered as 80s synth-pop came back sounding like the original.
+// Balanced (3) is the preset that took the new sound with every word intact.
+func TestCoverIsGuidedByDefault(t *testing.T) {
+	h, srv, owner, tok := newCoverEnv(t)
+	g := mkYue2Song(t, srv, "guided-cover", owner)
+
+	res := postCover(t, h, g.ID, url.Values{"instructions": {"80s synth-pop"}}, tok)
+	if res.Code >= 400 {
+		t.Fatalf("status = %d; body: %s", res.Code, res.Body.String())
+	}
+	jobs, _ := srv.st.DequeueQueued(10)
+	if len(jobs) != 1 {
+		t.Fatalf("queued %d jobs, want 1", len(jobs))
+	}
+	if jobs[0].CfgScale == nil || *jobs[0].CfgScale != 3 {
+		t.Errorf("CfgScale = %v, want the balanced preset (3)", jobs[0].CfgScale)
+	}
+}
+
+// Every preset stores what it names, off stores nothing, and a value the form
+// never offers is refused before a paid job is queued for it.
+func TestCoverStyleStrengthPresets(t *testing.T) {
+	for _, tc := range []struct {
+		value string
+		want  *float64
+	}{
+		{"off", nil},
+		{"balanced", ptrTo(3.0)},
+		{"strong", ptrTo(4.5)},
+	} {
+		t.Run(tc.value, func(t *testing.T) {
+			h, srv, owner, tok := newCoverEnvAs(t, "strength-"+tc.value)
+			g := mkYue2Song(t, srv, "strength-"+tc.value, owner)
+			res := postCover(t, h, g.ID, url.Values{
+				"instructions": {"synth-pop"}, "style_strength": {tc.value},
+			}, tok)
+			if res.Code >= 400 {
+				t.Fatalf("status = %d; body: %s", res.Code, res.Body.String())
+			}
+			jobs, _ := srv.st.DequeueQueued(10)
+			if len(jobs) != 1 {
+				t.Fatalf("queued %d jobs, want 1", len(jobs))
+			}
+			got := jobs[0].CfgScale
+			if (got == nil) != (tc.want == nil) || (got != nil && *got != *tc.want) {
+				t.Errorf("CfgScale = %v, want %v", got, tc.want)
+			}
+		})
+	}
+
+	h, srv, owner, tok := newCoverEnvAs(t, "strength-bogus")
+	g := mkYue2Song(t, srv, "strength-bogus", owner)
+	res := postCover(t, h, g.ID, url.Values{
+		"instructions": {"synth-pop"}, "style_strength": {"11"},
+	}, tok)
+	if res.Code != http.StatusBadRequest {
+		t.Errorf("an unknown strength = %d, want 400", res.Code)
+	}
+	if jobs, _ := srv.st.DequeueQueued(10); len(jobs) != 0 {
+		t.Errorf("an unknown strength still queued %d jobs", len(jobs))
+	}
+}
+
+// The seed is the source's unless a new one is asked for — with the melody
+// locked too, a copied seed left no way to get a different take.
+func TestCoverSeedIsCopiedUnlessANewOneIsAsked(t *testing.T) {
+	h, srv, owner, tok := newCoverEnv(t)
+	seed := int64(48)
+	g := &store.Song{
+		ID: "seeded-cover", JobID: "job-seeded-cover", UserID: owner,
+		Lyrics: "[Verse]\nla", Caption: "rock ballad", Seed: &seed,
+		Engine: store.EngineYue2, Mode: store.ModeCreate, Delivery: "s3",
+		AudioPath: filepath.Join(srv.cfg.AudioDir, "seeded-cover.m4a"),
+		CreatedAt: time.Now().UTC(),
+	}
+	if err := srv.st.CreateSong(g); err != nil {
+		t.Fatal(err)
+	}
+
+	postCover(t, h, g.ID, url.Values{"instructions": {"synth-pop"}}, tok)
+	postCover(t, h, g.ID, url.Values{"instructions": {"synth-pop"}, "new_seed": {"1"}}, tok)
+	jobs, _ := srv.st.DequeueQueued(10)
+	if len(jobs) != 2 {
+		t.Fatalf("queued %d jobs, want 2", len(jobs))
+	}
+	if jobs[0].Seed == nil || *jobs[0].Seed != seed {
+		t.Errorf("default seed = %v, want the source's %d", jobs[0].Seed, seed)
+	}
+	if jobs[1].Seed == nil || *jobs[1].Seed == seed || *jobs[1].Seed < 0 {
+		t.Errorf("new seed = %v, want a fresh non-negative one", jobs[1].Seed)
+	}
+}

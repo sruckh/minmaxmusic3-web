@@ -205,3 +205,67 @@ func min(a, b int) int {
 	}
 	return b
 }
+
+// An edit is unguided unless asked: guidance on an edit has not been listened
+// to, unlike on a cover. Asked, it stores the preset and can take a new seed.
+func TestEditStyleStrengthDefaultsOffAndIsHonoured(t *testing.T) {
+	h, _, srv := newTestEnvWith(t, withYue2Frozen)
+	alice, tok := mkSession(t, srv, "edit-strength", store.StatusApproved, store.RoleUser)
+	abc := "X:1\nM:4/4\nL:1/16\nQ:1/4=100\nK:C\nV: Vocal\nZ|\nV: Ins\nZ|\n"
+	g := mkScoredSong(t, srv, "strength-edit", alice.ID, abc)
+
+	for _, form := range []url.Values{
+		{"instructions": {"synth-pop"}},
+		{"instructions": {"synth-pop"}, "style_strength": {"balanced"}, "new_seed": {"1"}},
+	} {
+		if res := postFormAs(h, "/songs/"+g.ID+"/edit", form, tok); res.Code >= 400 {
+			t.Fatalf("status = %d; body: %s", res.Code, res.Body.String())
+		}
+	}
+	jobs, _ := srv.st.DequeueQueued(10)
+	if len(jobs) != 2 {
+		t.Fatalf("queued %d jobs, want 2", len(jobs))
+	}
+	if jobs[0].CfgScale != nil {
+		t.Errorf("default edit sent CfgScale %v, want none", *jobs[0].CfgScale)
+	}
+	if jobs[1].CfgScale == nil || *jobs[1].CfgScale != 3 {
+		t.Errorf("balanced edit CfgScale = %v, want 3", jobs[1].CfgScale)
+	}
+	if jobs[1].Seed == nil {
+		t.Error("a new seed was asked for but none was stored")
+	}
+
+	res := postFormAs(h, "/songs/"+g.ID+"/edit", url.Values{
+		"instructions": {"synth-pop"}, "style_strength": {"loud"},
+	}, tok)
+	if res.Code != http.StatusBadRequest {
+		t.Errorf("an unknown strength = %d, want 400", res.Code)
+	}
+}
+
+// Both panels offer the controls, each with its own default selected.
+func TestPanelsOfferStyleStrengthAndNewSeed(t *testing.T) {
+	h, srv, owner, tok := newCoverEnv(t)
+	g := &store.Song{
+		ID: "panel-song", JobID: "job-panel-song", UserID: owner,
+		Lyrics: "[Verse]\nla", Caption: "ballad", Engine: store.EngineYue2,
+		Mode: store.ModeCreate, Delivery: "s3", AudioPath: "/tmp/panel-song.m4a",
+		ScoreABC:  "X:1\nM:4/4\nL:1/16\nQ:1/4=77\nK:C\nV: Vocal\nZ|\nV: Ins\nZ|\n",
+		CreatedAt: time.Now().UTC(),
+	}
+	if err := srv.st.CreateSong(g); err != nil {
+		t.Fatal(err)
+	}
+	body := do(h, "GET", "/songs/"+g.ID, cookieFor(tok)).Body.String()
+	for _, want := range []string{
+		`id="cover-strength"`, `id="edit-strength"`,
+		`id="cover-new-seed"`, `id="edit-new-seed"`,
+		`<option value="balanced" selected>`, `<option value="off" selected>`,
+		"Edit in generator</b> instead",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("song page missing %q", want)
+		}
+	}
+}

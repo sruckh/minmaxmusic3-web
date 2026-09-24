@@ -2,6 +2,7 @@ package worker
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -197,6 +198,29 @@ func TestInstrumentalComesFromTheJobNotFromEmptyLyrics(t *testing.T) {
 	j.Mode = store.ModeCover
 	if req, _ := requestFor(j).(*runpod.Yue2Request); req.Instrumental {
 		t.Error("a cover must never be sent as instrumental")
+	}
+}
+
+// The guidance scale is sent exactly as stored, and a nil one stays absent.
+//
+// Absent is not the same request as zero: omitted, the worker runs one
+// unguided branch, which is what every job did before the field was stored.
+// Guessing a value here would change how old-style jobs sound.
+func TestCfgScaleTravelsOnlyWhenStored(t *testing.T) {
+	j := &store.Job{Engine: store.EngineYue2, Mode: store.ModeCover, Caption: "synth-pop"}
+	if req, _ := requestFor(j).(*runpod.Yue2Request); req.CfgScale != nil {
+		t.Errorf("no scale stored, but %v was sent", *req.CfgScale)
+	}
+
+	scale := 3.0
+	j.CfgScale = &scale
+	req, _ := requestFor(j).(*runpod.Yue2Request)
+	if req.CfgScale == nil || *req.CfgScale != 3 {
+		t.Errorf("stored scale 3 was sent as %v", req.CfgScale)
+	}
+	body, _ := json.Marshal(req)
+	if !strings.Contains(string(body), `"cfg_scale":3`) {
+		t.Errorf("cfg_scale missing from the wire payload: %s", body)
 	}
 }
 
