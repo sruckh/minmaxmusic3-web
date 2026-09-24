@@ -198,8 +198,11 @@ func requestFor(j *store.Job) any {
 			// Empty is left empty on purpose — the worker's own default is
 			// "full", and sending our guess would override a choice it is
 			// better placed to make.
-			Cot:          cot,
-			Seed:         j.Seed,
+			Cot:  cot,
+			Seed: j.Seed,
+			// Nil stays omitted, which leaves guidance off — the behaviour every
+			// job had before the field was stored.
+			CfgScale:     j.CfgScale,
 			ABC:          j.ABC,
 			SourceAudio:  j.SourceAudio,
 			Instrumental: instrumental,

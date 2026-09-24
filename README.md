@@ -33,7 +33,7 @@ It drives **two inference engines**, and the model is a property of each song ra
 | Engine | Modes | What it is |
 |---|---|---|
 | **MiniMax Music 3** | create | Sings tagged lyrics at a length you choose, from a structured style caption. |
-| **YuE2** | create, cover, edit | Plans the song as an ABC score first, then realizes it as audio — so the score can be re-rendered with a different arrangement or tempo, and an existing recording can be re-styled. |
+| **YuE2** | create, cover, edit | Plans the song as an ABC score first, then realizes it as audio — so the score can be re-rendered with a different arrangement or tempo, and an existing recording can be re-styled. Which of these to use depends on what should survive; see [Reworking a Song](#-reworking-a-song--which-tool-to-use). |
 
 The engine is chosen on the generate form and recorded with the job. It decides what the rest of the form offers, because the two do not accept the same section tags, the same parameters, or the same shape of style. Each engine also has **its own AI assistant**: the prompts ask for different documents — a JSON block for MiniMax, labelled plain text for YuE2 — and the reply is parsed by the engine that produced it.
 
@@ -65,7 +65,24 @@ The application is **multi-user and closed by default**: every route except sign
 ### 🎨 Cover — Re-style a Recording *(YuE2)*
 - Supply a recording three ways: a song already in the library, an upload, or a pasted URL. All three become one thing — a URL the worker can fetch.
 - YuE2 transcribes the melody and the lyrics, then generates a new version. Supplying your own lyrics is **optional** and takes precedence over the transcription.
+- **A cover keeps the recording's melody, tempo and key.** The worker locks generation to the transcribed melody (`cot="melody"`), so a tempo or key written into the style text is ignored — a 77 BPM ballad covered as "112 BPM synth-pop" is still 77 BPM.
+- **Style strength decides how far the sound moves.** It is sent as YuE2's `cfg_scale`, as one of three presets, because the usable range is narrow and was found by listening:
+  - *Off* sends none, and the model runs unguided. A rock ballad covered as 80s synth-pop came back sounding like the original.
+  - *Balanced* (3, the cover default) took on the synth sound with every word intact.
+  - *Strong* (4.5) pushes further and may slur words. At 6 the same cover dropped words and finished 12 s short.
+- **Use a new seed** gives a different take. Otherwise the seed is copied from the source song, which keeps a derived song a variation of its source.
 - The recording reaches RunPod through a **short-lived signed link this app mints**, not through shared object storage: 32 random bytes, stored only as a SHA-256 hash, single-purpose, and expiring in two hours. That TTL has to outlive the queue budget, because the worker does not fetch it until a GPU picks the job up.
+
+### 🧭 Reworking a Song — Which Tool to Use
+A song page offers three ways to derive a new song from an existing one. They keep different things, and picking the wrong one is the usual reason a result sounds unchanged.
+
+| You want | Use | What is kept | What can change |
+|---|---|---|---|
+| The same words in a **new genre, tempo or feel** | **Edit in generator**, then generate | Nothing but what you leave in the form | Everything — the model writes a new melody and score |
+| The **same song, re-sung** with new words or a new tempo | **Edit** panel *(YuE2)* | The stored score: melody, harmony, key, meter | Lyrics and tempo (`Q:`). Style strength is offered but defaults to *Off*, because guidance on an edit is untested. |
+| The **same melody** in a new arrangement | **Cover** panel *(YuE2)* | The transcribed melody, tempo and key | Instruments and production, through the style text at *Balanced* strength, and the lyrics |
+
+**Edit in generator** is a plain create: it copies the song's title, lyrics, style and seed into the generate form and queues nothing until you submit. It is the one route that honours a tempo or genre change, because nothing constrains the model to the old song. The cost is that the melody is new too — asking the original rock ballad for 80s synth-pop this way produced a 115 BPM song in a different key.
 
 ### 🪄 AI Songwriting & Style Assistant
 - Integrated AI assistant (`POST /assistant`) that drafts the generate form's contents from a rough idea. It **prefills for review** and never submits.
@@ -274,8 +291,8 @@ Access is enforced by one middleware wrapping the entire mux: anything not liste
 | `GET /history/personal` | `GET` | Authenticated | htmx fragment for the caller's own songs (`?page=`). |
 | `GET /history/public` | `GET` | Authenticated | htmx fragment for the community library (`?page=`). |
 | `GET /songs/{id}` | `GET` | Owner / Shared / Admin | Playback detail page with lyrics, caption, seed, score metadata, history navigation, and — for the owner — *Edit in generator*, plus the Edit and Cover panels where the song's engine supports them. |
-| `POST /songs/{id}/edit` | `POST` | Owner | Re-render a YuE2 song from its stored score with a new arrangement, tempo or words. Blank fields fall back to the song's own, so a tempo-only edit does not blank the lyrics. Queues a **new** song and records `mode=edit` with its source. |
-| `POST /songs/{id}/cover` | `POST` | Owner | Re-style a recording with YuE2's cover mode. Accepts a pasted `source_url`, a multipart `source_upload`, or neither — in which case the song itself is the recording. Queues a job with `mode=cover`. |
+| `POST /songs/{id}/edit` | `POST` | Owner | Re-render a YuE2 song from its stored score with a new arrangement, tempo or words. Blank fields fall back to the song's own, so a tempo-only edit does not blank the lyrics. Optional `style_strength` (`off` default, `balanced`, `strong`) and `new_seed`. Queues a **new** song and records `mode=edit` with its source. |
+| `POST /songs/{id}/cover` | `POST` | Owner | Re-style a recording with YuE2's cover mode. Accepts a pasted `source_url`, a multipart `source_upload`, or neither — in which case the song itself is the recording. Optional `style_strength` (`balanced` default, `off`, `strong`) and `new_seed`. An unrecognised strength is a `400`. Queues a job with `mode=cover`. |
 | `POST /songs/{id}/toggle-public` | `POST` | Owner / Admin | Set sharing explicitly — send `public=1` or `public=0`. Not a blind flip. |
 | `POST /songs/{id}/title` | `POST` | Owner / Admin | Update song title from the library. |
 | `DELETE /songs/{id}` | `DELETE` | Owner / Admin | Delete song, purge database records, and remove audio file. |

@@ -240,6 +240,14 @@ func (s *Server) handleCoverSong(w http.ResponseWriter, r *http.Request) {
 	// Optional on purpose: with none supplied, the worker's ASR transcribes the
 	// words from the recording. That is the whole point of a cover.
 	lyrics := strings.TrimSpace(r.FormValue("input"))
+	// Balanced unless asked otherwise. Unguided, the transcribed melody wins and
+	// the requested style barely registers — which is the complaint that
+	// introduced this control. See styleStrengths.
+	scale, err := styleStrengthOf(r, "balanced")
+	if err != nil {
+		s.renderJobError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 
 	sourceURL, sourceSongID, err := s.resolveCoverSource(r, src.ID)
 	if err != nil {
@@ -262,7 +270,8 @@ func (s *Server) handleCoverSong(w http.ResponseWriter, r *http.Request) {
 		// Set only when the recording is one of ours, so a cover of an uploaded
 		// file is not falsely recorded as derived from this song.
 		SourceSongID: sourceSongID,
-		Seed:         src.Seed,
+		Seed:         seedFor(r, src),
+		CfgScale:     scale,
 		CreatedAt:    time.Now().UTC(),
 	}
 	if err := s.st.CreateJob(j); err != nil {

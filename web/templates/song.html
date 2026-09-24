@@ -78,6 +78,11 @@
           and the words from the recording, then generates a new version — so
           this produces a different take, not an edit of this one.
         </p>
+        <p class="help">
+          The melody, tempo and key come from the recording, so a tempo or key in
+          the style is ignored. For the same words in a new genre or tempo, use
+          <b>Edit in generator</b> instead — it writes a new song.
+        </p>
         <form hx-post="/songs/{{.Song.ID}}/cover" hx-target="#cover-job"
               hx-swap="innerHTML" hx-encoding="multipart/form-data" style="margin-top:12px;">
           <div class="field-group">
@@ -123,6 +128,27 @@
               A listener usually knows the words better than a transcription does, so
               anything you type here is used instead.
             </p>
+          </div>
+
+          <!-- Style strength is YuE2's cfg_scale. Presets, not a number: the
+               usable range is narrow and was found by listening — at 6 a cover
+               slurred and dropped words. See styleStrengths in handlers.go. -->
+          <div class="rack-row" style="flex-direction:column; align-items:stretch;">
+            <label class="field-label" for="cover-strength">Style strength</label>
+            <select id="cover-strength" name="style_strength" style="margin-top:6px;">
+              <option value="off">Off — stays closest to this song</option>
+              <option value="balanced" selected>Balanced — takes on the new style, words stay clear</option>
+              <option value="strong">Strong — more of the new style, may slur words</option>
+            </select>
+          </div>
+          <div class="rack-row toggle-row">
+            <span class="field-label">Seed</span>
+            <div style="display:flex;align-items:center;">
+              <input type="checkbox" id="cover-new-seed" name="new_seed" value="1" style="width:auto;">
+              <label for="cover-new-seed" class="toggle-label" style="margin-left:8px; cursor:pointer;">
+                Use a new seed — a different take instead of this song's
+              </label>
+            </div>
           </div>
 
           <button type="submit" class="btn btn--primary">Generate the cover</button>
@@ -177,6 +203,26 @@
             <input type="number" class="input" name="tempo" x-model.number="tempo"
                    min="20" max="400" style="width:auto;flex:0 1 110px;">
             <span class="help">BPM — was {{with .Score}}{{.Tempo}}{{else}}unknown{{end}}</span>
+          </div>
+          <!-- Style strength is YuE2's cfg_scale. Presets, not a number: the
+               usable range is narrow and was found by listening — at 6 a cover
+               slurred and dropped words. See styleStrengths in handlers.go. -->
+          <div class="rack-row" style="flex-direction:column; align-items:stretch;">
+            <label class="field-label" for="edit-strength">Style strength</label>
+            <select id="edit-strength" name="style_strength" style="margin-top:6px;">
+              <option value="off" selected>Off — stays closest to this song</option>
+              <option value="balanced">Balanced — takes on the new style, words stay clear</option>
+              <option value="strong">Strong — more of the new style, may slur words</option>
+            </select>
+          </div>
+          <div class="rack-row toggle-row">
+            <span class="field-label">Seed</span>
+            <div style="display:flex;align-items:center;">
+              <input type="checkbox" id="edit-new-seed" name="new_seed" value="1" style="width:auto;">
+              <label for="edit-new-seed" class="toggle-label" style="margin-left:8px; cursor:pointer;">
+                Use a new seed — a different take instead of this song's
+              </label>
+            </div>
           </div>
           <div style="margin-top:12px;">
             <button type="submit" class="btn btn--primary">Re-render this song</button>

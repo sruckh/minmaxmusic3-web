@@ -134,6 +134,15 @@ type Job struct {
 	// cannot tell "this song has no words" from "the words are not typed yet",
 	// and those want opposite requests.
 	Instrumental bool
+	// CfgScale is how strongly YuE2 is steered toward the style text, sent to
+	// the worker as cfg_scale. Nil means "not sent", which leaves guidance off:
+	// the worker then runs a single unguided branch.
+	//
+	// It exists for cover and edit, where the style competes with a melody the
+	// model is locked to. Unguided, a cover of a rock ballad asked for synth-pop
+	// came back sounding like the original; at 3 it took on the new sound with
+	// every word intact; at 6 it slurred and dropped words.
+	CfgScale *float64
 	// Idea is the free-text prompt the user gave the AI assistant, if any.
 	// It plays no role in generation — RunPod never sees it — it is carried
 	// through purely so History's "Edit in generator" can hand it back to
@@ -597,6 +606,9 @@ CREATE INDEX IF NOT EXISTS idx_cover_uploads_user_id ON cover_uploads(user_id);
 		// The song an edit or a library-sourced cover derives from. Empty on
 		// every existing row, and on every job that was not derived from one.
 		{"jobs", "source_song_id", `ALTER TABLE jobs ADD COLUMN source_song_id TEXT NOT NULL DEFAULT ''`},
+		// NULL on existing rows: none of them sent a guidance scale, and NULL
+		// is how "not sent" is stored, so the default is what they already mean.
+		{"jobs", "cfg_scale", `ALTER TABLE jobs ADD COLUMN cfg_scale REAL`},
 		{"songs", "mode", `ALTER TABLE songs ADD COLUMN mode TEXT NOT NULL DEFAULT '` + ModeCreate + `'`},
 		// Empty on existing rows: no song generated before YuE2 existed has a
 		// score, which is exactly what the empty string says.
@@ -642,11 +654,12 @@ func (s *Store) hasColumn(table, col string) (bool, error) {
 func (s *Store) CreateJob(j *Job) error {
 	_, err := s.db.Exec(
 		`INSERT INTO jobs (id, state, user_id, lyrics, caption, idea, title, duration_s, seed,
-		  engine, mode, cot, abc, source_audio, instrumental, source_song_id, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		  engine, mode, cot, abc, source_audio, instrumental, source_song_id, cfg_scale,
+		  created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		j.ID, StateQueued, owner(j.UserID), j.Lyrics, j.Caption, j.Idea, j.Title, j.Duration, j.Seed,
 		engineOr(j.Engine), modeOr(j.Mode), j.Cot, j.ABC, j.SourceAudio, j.Instrumental,
-		j.SourceSongID, j.CreatedAt.UTC(), j.CreatedAt.UTC())
+		j.SourceSongID, j.CfgScale, j.CreatedAt.UTC(), j.CreatedAt.UTC())
 	return err
 }
 
@@ -718,7 +731,7 @@ func (s *Store) FailJob(id, reason string) error {
 
 const jobCols = `id, state, runpod_id, user_id, lyrics, caption, idea, title, duration_s,
 	seed, error, retries, created_at, started_at, updated_at, engine, mode, cot, abc,
-	source_audio, instrumental, source_song_id`
+	source_audio, instrumental, source_song_id, cfg_scale`
 
 func scanJob(sc interface{ Scan(...any) error }, j *Job) error {
 	// started_at is NULL until the job reaches a GPU, so it cannot scan
@@ -727,7 +740,7 @@ func scanJob(sc interface{ Scan(...any) error }, j *Job) error {
 	if err := sc.Scan(&j.ID, &j.State, &j.RunPodID, &j.UserID, &j.Lyrics, &j.Caption,
 		&j.Idea, &j.Title, &j.Duration, &j.Seed, &j.Error, &j.Retries, &j.CreatedAt, &started,
 		&j.UpdatedAt, &j.Engine, &j.Mode, &j.Cot, &j.ABC, &j.SourceAudio, &j.Instrumental,
-		&j.SourceSongID); err != nil {
+		&j.SourceSongID, &j.CfgScale); err != nil {
 		return err
 	}
 	j.StartedAt = nil
