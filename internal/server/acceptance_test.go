@@ -214,14 +214,7 @@ func TestAcceptanceFullUserLifecycle(t *testing.T) {
 		"seed":           {"7"},
 	}, 200)
 	_ = res
-	waitUntil(t, 10*time.Second, func() bool {
-		up.mu.Lock()
-		defer up.mu.Unlock()
-		return up.RunCalls == 1
-	}, "worker submitted the job")
-	up.mu.Lock()
-	up.Completed = true
-	up.mu.Unlock()
+	up.completeFirstRun(t)
 	waitUntil(t, 20*time.Second, func() bool {
 		songs, err := s.st.PersonalSongs(aliceUser.ID, 10, 0)
 		return err == nil && len(songs) == 1

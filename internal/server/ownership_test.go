@@ -381,14 +381,7 @@ func TestGeneratedSongInheritsItsOwner(t *testing.T) {
 	if res.Code != 200 {
 		t.Fatalf("POST /jobs = %d: %s", res.Code, res.Body.String())
 	}
-	waitUntil(t, 10*time.Second, func() bool {
-		up.mu.Lock()
-		defer up.mu.Unlock()
-		return up.RunCalls == 1
-	}, "worker submit")
-	up.mu.Lock()
-	up.Completed = true
-	up.mu.Unlock()
+	up.completeFirstRun(t)
 
 	// The job is owned by the creator, not by the legacy owner.
 	waitUntil(t, 20*time.Second, func() bool {

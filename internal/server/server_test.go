@@ -202,15 +202,7 @@ func TestEndToEnd(t *testing.T) {
 	if !strings.Contains(res.Body.String(), "Queued") {
 		t.Fatalf("expected queued fragment, got %q", res.Body.String())
 	}
-	waitUntil(t, 10*time.Second, func() bool {
-		up.mu.Lock()
-		defer up.mu.Unlock()
-		return up.RunCalls == 1
-	}, "worker to submit to RunPod exactly once")
-
-	up.mu.Lock()
-	up.Completed = true
-	up.mu.Unlock()
+	up.completeFirstRun(t)
 
 	jobID := jobIDFrom(t, res)
 	var done *httptest.ResponseRecorder
