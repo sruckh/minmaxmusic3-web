@@ -38,6 +38,12 @@ func TestAnswerDelete(t *testing.T) {
 		{"htmx from a list", "/songs/x", "/history", true, 200, "HX-Redirect", ""},
 		{"htmx from the song page", "/songs/x", "https://h/songs/x", true, 200, "HX-Redirect", "/history"},
 		{"htmx, explicit target", "/songs/x?redirect=/", "https://h/songs/x", true, 200, "HX-Redirect", "/"},
+		// Another site is never a target. It is dropped as if absent, so each
+		// request lands where it would have with no redirect at all.
+		{"plain browser, off-site", "/songs/x?redirect=https://evil.example", "", false, 303, "Location", "/history"},
+		{"plain browser, scheme-relative", "/songs/x?redirect=//evil.example", "", false, 303, "Location", "/history"},
+		{"htmx, off-site from a list", "/songs/x?redirect=https://evil.example", "/history", true, 200, "HX-Redirect", ""},
+		{"htmx, backslash from the song page", "/songs/x?redirect=/%5Cevil.example", "https://h/songs/x", true, 200, "HX-Redirect", "/history"},
 	} {
 		req := httptest.NewRequest("DELETE", c.url, nil)
 		if c.htmx {

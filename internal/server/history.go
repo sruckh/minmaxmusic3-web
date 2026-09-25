@@ -303,7 +303,9 @@ func (s *Server) handleDeleteSong(w http.ResponseWriter, r *http.Request) {
 // must leave it, since that page now 404s. A plain browser always lands on
 // the library.
 func answerDelete(w http.ResponseWriter, r *http.Request) {
-	target := r.URL.Query().Get("redirect")
+	// Only a path on this site: the same check as the post-login redirect, so
+	// a crafted link cannot turn a delete into a hop to somebody else's page.
+	target := safeNext(r.URL.Query().Get("redirect"))
 	if !isHTMX(r) {
 		http.Redirect(w, r, cmp.Or(target, "/history"), http.StatusSeeOther)
 		return
