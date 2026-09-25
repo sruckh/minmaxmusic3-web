@@ -3,7 +3,6 @@ package server
 import (
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
@@ -36,14 +35,7 @@ func completeOneSongTitled(t *testing.T, title string) (http.Handler, string) {
 	if res.Code != 200 {
 		t.Fatalf("POST /jobs = %d", res.Code)
 	}
-	waitUntil(t, 10*time.Second, func() bool {
-		up.mu.Lock()
-		defer up.mu.Unlock()
-		return up.RunCalls == 1
-	}, "worker submit")
-	up.mu.Lock()
-	up.Completed = true
-	up.mu.Unlock()
+	up.completeFirstRun(t)
 
 	jobID := jobIDFrom(t, res)
 	var body string
@@ -58,6 +50,16 @@ func completeOneSongTitled(t *testing.T, title string) (http.Handler, string) {
 		id = id[:end]
 	}
 	return h, id
+}
+
+// mustGet is get with the status checked, returning the body.
+func mustGet(t *testing.T, h http.Handler, path string, want int) string {
+	t.Helper()
+	res := get(h, path)
+	if res.Code != want {
+		t.Fatalf("GET %s = %d, want %d", path, res.Code, want)
+	}
+	return res.Body.String()
 }
 
 func TestHistoryListsCompletedSong(t *testing.T) {
@@ -199,46 +201,20 @@ func TestRegenerateEndpointIsGone(t *testing.T) {
 func TestDeleteSong(t *testing.T) {
 	h, id := completeOneSong(t)
 
-	// Check that song detail and audio work before delete
-	detail := get(h, "/songs/"+id)
-	if detail.Code != 200 {
-		t.Fatalf("GET /songs/%s = %d", id, detail.Code)
-	}
-	audioRes := get(h, "/audio/"+id)
-	if audioRes.Code != 200 {
-		t.Fatalf("GET /audio/%s = %d", id, audioRes.Code)
+	// The song and its audio are there before the delete.
+	mustGet(t, h, "/songs/"+id, 200)
+	mustGet(t, h, "/audio/"+id, 200)
+
+	res := do(h, "DELETE", "/songs/"+id+"?redirect=/history", nil, "HX-Request", "true")
+	if res.Code != 200 || res.Header().Get("HX-Redirect") != "/history" {
+		t.Fatalf("DELETE /songs/%s = %d, HX-Redirect %q; want 200, /history",
+			id, res.Code, res.Header().Get("HX-Redirect"))
 	}
 
-	// Delete with HTMX header and redirect query
-	req := httptest.NewRequest("DELETE", "/songs/"+id+"?redirect=/history", nil)
-	req.Header.Set("HX-Request", "true")
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	if rec.Code != 200 {
-		t.Fatalf("DELETE /songs/%s = %d", id, rec.Code)
-	}
-	if rec.Header().Get("HX-Redirect") != "/history" {
-		t.Fatalf("expected HX-Redirect header '/history', got %q", rec.Header().Get("HX-Redirect"))
-	}
-
-	// Verify song detail is 404
-	detailAfter := get(h, "/songs/"+id)
-	if detailAfter.Code != 404 {
-		t.Fatalf("GET /songs/%s after delete = %d, want 404", id, detailAfter.Code)
-	}
-
-	// Verify audio is 404
-	audioAfter := get(h, "/audio/"+id)
-	if audioAfter.Code != 404 {
-		t.Fatalf("GET /audio/%s after delete = %d, want 404", id, audioAfter.Code)
-	}
-
-	// Verify history no longer lists the song ID
-	hist := get(h, "/history")
-	if hist.Code != 200 {
-		t.Fatalf("GET /history = %d", hist.Code)
-	}
-	if strings.Contains(hist.Body.String(), id) {
+	// And gone after it, from every place that showed it.
+	mustGet(t, h, "/songs/"+id, 404)
+	mustGet(t, h, "/audio/"+id, 404)
+	if strings.Contains(mustGet(t, h, "/history", 200), id) {
 		t.Fatalf("history still contains song %s after delete", id)
 	}
 }
@@ -256,22 +232,11 @@ func TestUpdateSongTitle(t *testing.T) {
 		t.Fatalf("expected response 'Midnight Electric Jazz', got %q", res.Body.String())
 	}
 
-	// Verify history displays new title
-	hist := get(h, "/history")
-	if hist.Code != 200 {
-		t.Fatalf("GET /history = %d", hist.Code)
-	}
-	if !strings.Contains(hist.Body.String(), "Midnight Electric Jazz") {
-		t.Fatalf("history missing updated title 'Midnight Electric Jazz': %s", hist.Body.String())
-	}
-
-	// Verify song detail displays new title
-	detail := get(h, "/songs/"+id)
-	if detail.Code != 200 {
-		t.Fatalf("GET /songs/%s = %d", id, detail.Code)
-	}
-	if !strings.Contains(detail.Body.String(), "Midnight Electric Jazz") {
-		t.Fatalf("detail missing updated title 'Midnight Electric Jazz': %s", detail.Body.String())
+	// Both places that show the title show the new one.
+	for _, path := range []string{"/history", "/songs/" + id} {
+		if body := mustGet(t, h, path, 200); !strings.Contains(body, "Midnight Electric Jazz") {
+			t.Fatalf("%s missing updated title 'Midnight Electric Jazz': %s", path, body)
+		}
 	}
 
 	// Empty title rejected

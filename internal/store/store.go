@@ -362,21 +362,8 @@ func (s *Store) RecordCoverUpload(name, userID string) error {
 // CoverUploadsByUser lists the staged recordings one account owns, so a
 // deletion can unlink them.
 func (s *Store) CoverUploadsByUser(userID string) ([]string, error) {
-	rows, err := s.db.Query(
+	return queryStrings(s.db,
 		`SELECT name FROM cover_uploads WHERE user_id = ? ORDER BY created_at`, userID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var names []string
-	for rows.Next() {
-		var n string
-		if err := rows.Scan(&n); err != nil {
-			return nil, err
-		}
-		names = append(names, n)
-	}
-	return names, rows.Err()
 }
 
 // PurgeStaleCoverUploads drops records for staged recordings older than maxAge,
@@ -388,21 +375,8 @@ func (s *Store) CoverUploadsByUser(userID string) ([]string, error) {
 // those bytes again.
 func (s *Store) PurgeStaleCoverUploads(maxAge time.Duration) ([]string, error) {
 	cutoff := time.Now().UTC().Add(-maxAge)
-	rows, err := s.db.Query(`SELECT name FROM cover_uploads WHERE created_at <= ?`, cutoff)
+	names, err := queryStrings(s.db, `SELECT name FROM cover_uploads WHERE created_at <= ?`, cutoff)
 	if err != nil {
-		return nil, err
-	}
-	var names []string
-	for rows.Next() {
-		var n string
-		if err := rows.Scan(&n); err != nil {
-			rows.Close()
-			return nil, err
-		}
-		names = append(names, n)
-	}
-	rows.Close() // the single sqlite connection cannot Exec while this is open
-	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 	if len(names) == 0 {
@@ -485,7 +459,32 @@ func (s *Store) migrate() error {
 		}
 	}
 
-	if _, err := s.db.Exec(`
+	if _, err := s.db.Exec(schema); err != nil {
+		return err
+	}
+	// ADD COLUMN has no IF NOT EXISTS, so each is guarded by a table_info
+	// probe.
+	for _, c := range addedColumns {
+		has, err := s.hasColumn(c.table, c.col)
+		if err != nil {
+			return err
+		}
+		if has {
+			continue
+		}
+		if _, err := s.db.Exec(c.ddl); err != nil {
+			return err
+		}
+	}
+	// Indexes over the added columns, so they must follow the ALTERs.
+	_, err = s.db.Exec(addedIndexes)
+	return err
+}
+
+// schema is every table as first created. Columns added since then are in
+// addedColumns, because CREATE TABLE IF NOT EXISTS never alters a table that
+// already exists.
+const schema = `
 CREATE TABLE IF NOT EXISTS jobs (
   id         TEXT PRIMARY KEY,
   state      TEXT NOT NULL,
@@ -566,78 +565,87 @@ CREATE TABLE IF NOT EXISTS cover_uploads (
   created_at TIMESTAMP NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_cover_uploads_user_id ON cover_uploads(user_id);
-`); err != nil {
-		return err
-	}
+`
 
-	// ADD COLUMN has no IF NOT EXISTS, so each is guarded by a table_info
-	// probe. Existing rows fall to the legacy owner and stay private.
-	for _, c := range []struct{ table, col, ddl string }{
-		{"jobs", "user_id", `ALTER TABLE jobs ADD COLUMN user_id TEXT NOT NULL DEFAULT '` + LegacyUserID + `'`},
-		{"songs", "user_id", `ALTER TABLE songs ADD COLUMN user_id TEXT NOT NULL DEFAULT '` + LegacyUserID + `'`},
-		{"songs", "is_public", `ALTER TABLE songs ADD COLUMN is_public INTEGER NOT NULL DEFAULT 0`},
-		// Nullable on purpose: NULL means "never reached a GPU", which is
-		// exactly the distinction the queue budget needs. No DEFAULT — SQLite
-		// would render CURRENT_TIMESTAMP in a format the driver cannot compare
-		// against a Go time.Time (see the note on migrate).
-		{"jobs", "started_at", `ALTER TABLE jobs ADD COLUMN started_at TIMESTAMP`},
-		// Empty on existing rows, which is the same as "the user named
-		// nothing" — those jobs fall to the caption-derived title they
-		// already have.
-		{"jobs", "title", `ALTER TABLE jobs ADD COLUMN title TEXT NOT NULL DEFAULT ''`},
-		// Empty on existing rows: songs generated before this column existed
-		// were never drafted from a recorded idea, which is exactly true.
-		{"jobs", "idea", `ALTER TABLE jobs ADD COLUMN idea TEXT NOT NULL DEFAULT ''`},
-		{"songs", "idea", `ALTER TABLE songs ADD COLUMN idea TEXT NOT NULL DEFAULT ''`},
-		// Every job that predates this column was a MiniMax create — that was
-		// the only engine and the only mode — so the defaults are not a guess,
-		// they are what those rows already mean. No backfill needed.
-		{"jobs", "engine", `ALTER TABLE jobs ADD COLUMN engine TEXT NOT NULL DEFAULT '` + EngineMiniMax + `'`},
-		{"jobs", "mode", `ALTER TABLE jobs ADD COLUMN mode TEXT NOT NULL DEFAULT '` + ModeCreate + `'`},
-		{"jobs", "abc", `ALTER TABLE jobs ADD COLUMN abc TEXT NOT NULL DEFAULT ''`},
-		// Empty means "the worker's default" — for MiniMax rows, and for every
-		// row that predates the column, that is the only truthful value.
-		{"jobs", "cot", `ALTER TABLE jobs ADD COLUMN cot TEXT NOT NULL DEFAULT ''`},
-		{"songs", "cot", `ALTER TABLE songs ADD COLUMN cot TEXT NOT NULL DEFAULT ''`},
-		{"jobs", "source_audio", `ALTER TABLE jobs ADD COLUMN source_audio TEXT NOT NULL DEFAULT ''`},
-		// False on existing rows: every job before this column was one the user
-		// gave words to, which is exactly what false says.
-		{"jobs", "instrumental", `ALTER TABLE jobs ADD COLUMN instrumental INTEGER NOT NULL DEFAULT 0`},
-		// The song an edit or a library-sourced cover derives from. Empty on
-		// every existing row, and on every job that was not derived from one.
-		{"jobs", "source_song_id", `ALTER TABLE jobs ADD COLUMN source_song_id TEXT NOT NULL DEFAULT ''`},
-		// NULL on existing rows: none of them sent a guidance scale, and NULL
-		// is how "not sent" is stored, so the default is what they already mean.
-		{"jobs", "cfg_scale", `ALTER TABLE jobs ADD COLUMN cfg_scale REAL`},
-		{"songs", "mode", `ALTER TABLE songs ADD COLUMN mode TEXT NOT NULL DEFAULT '` + ModeCreate + `'`},
-		// Empty on existing rows: no song generated before YuE2 existed has a
-		// score, which is exactly what the empty string says.
-		{"songs", "score_abc", `ALTER TABLE songs ADD COLUMN score_abc TEXT NOT NULL DEFAULT ''`},
-		{"songs", "source_song_id", `ALTER TABLE songs ADD COLUMN source_song_id TEXT NOT NULL DEFAULT ''`},
-		// False on existing rows. MiniMax never reported truncation, so for
-		// every song before this column the honest value is "not known to be
-		// truncated" — which is what displaying nothing on false means.
-		{"songs", "truncated", `ALTER TABLE songs ADD COLUMN truncated INTEGER NOT NULL DEFAULT 0`},
-	} {
-		has, err := s.hasColumn(c.table, c.col)
-		if err != nil {
-			return err
-		}
-		if has {
-			continue
-		}
-		if _, err := s.db.Exec(c.ddl); err != nil {
-			return err
-		}
-	}
+// addedColumns are the columns added after a table was first created, in
+// order. Existing rows fall to the legacy owner and stay private.
+var addedColumns = []struct{ table, col, ddl string }{
+	{"jobs", "user_id", `ALTER TABLE jobs ADD COLUMN user_id TEXT NOT NULL DEFAULT '` + LegacyUserID + `'`},
+	{"songs", "user_id", `ALTER TABLE songs ADD COLUMN user_id TEXT NOT NULL DEFAULT '` + LegacyUserID + `'`},
+	{"songs", "is_public", `ALTER TABLE songs ADD COLUMN is_public INTEGER NOT NULL DEFAULT 0`},
+	// Nullable on purpose: NULL means "never reached a GPU", which is
+	// exactly the distinction the queue budget needs. No DEFAULT — SQLite
+	// would render CURRENT_TIMESTAMP in a format the driver cannot compare
+	// against a Go time.Time (see the note on migrate).
+	{"jobs", "started_at", `ALTER TABLE jobs ADD COLUMN started_at TIMESTAMP`},
+	// Empty on existing rows, which is the same as "the user named
+	// nothing" — those jobs fall to the caption-derived title they
+	// already have.
+	{"jobs", "title", `ALTER TABLE jobs ADD COLUMN title TEXT NOT NULL DEFAULT ''`},
+	// Empty on existing rows: songs generated before this column existed
+	// were never drafted from a recorded idea, which is exactly true.
+	{"jobs", "idea", `ALTER TABLE jobs ADD COLUMN idea TEXT NOT NULL DEFAULT ''`},
+	{"songs", "idea", `ALTER TABLE songs ADD COLUMN idea TEXT NOT NULL DEFAULT ''`},
+	// Every job that predates this column was a MiniMax create — that was
+	// the only engine and the only mode — so the defaults are not a guess,
+	// they are what those rows already mean. No backfill needed.
+	{"jobs", "engine", `ALTER TABLE jobs ADD COLUMN engine TEXT NOT NULL DEFAULT '` + EngineMiniMax + `'`},
+	{"jobs", "mode", `ALTER TABLE jobs ADD COLUMN mode TEXT NOT NULL DEFAULT '` + ModeCreate + `'`},
+	{"jobs", "abc", `ALTER TABLE jobs ADD COLUMN abc TEXT NOT NULL DEFAULT ''`},
+	// Empty means "the worker's default" — for MiniMax rows, and for every
+	// row that predates the column, that is the only truthful value.
+	{"jobs", "cot", `ALTER TABLE jobs ADD COLUMN cot TEXT NOT NULL DEFAULT ''`},
+	{"songs", "cot", `ALTER TABLE songs ADD COLUMN cot TEXT NOT NULL DEFAULT ''`},
+	{"jobs", "source_audio", `ALTER TABLE jobs ADD COLUMN source_audio TEXT NOT NULL DEFAULT ''`},
+	// False on existing rows: every job before this column was one the user
+	// gave words to, which is exactly what false says.
+	{"jobs", "instrumental", `ALTER TABLE jobs ADD COLUMN instrumental INTEGER NOT NULL DEFAULT 0`},
+	// The song an edit or a library-sourced cover derives from. Empty on
+	// every existing row, and on every job that was not derived from one.
+	{"jobs", "source_song_id", `ALTER TABLE jobs ADD COLUMN source_song_id TEXT NOT NULL DEFAULT ''`},
+	// NULL on existing rows: none of them sent a guidance scale, and NULL
+	// is how "not sent" is stored, so the default is what they already mean.
+	{"jobs", "cfg_scale", `ALTER TABLE jobs ADD COLUMN cfg_scale REAL`},
+	{"songs", "mode", `ALTER TABLE songs ADD COLUMN mode TEXT NOT NULL DEFAULT '` + ModeCreate + `'`},
+	// Empty on existing rows: no song generated before YuE2 existed has a
+	// score, which is exactly what the empty string says.
+	{"songs", "score_abc", `ALTER TABLE songs ADD COLUMN score_abc TEXT NOT NULL DEFAULT ''`},
+	{"songs", "source_song_id", `ALTER TABLE songs ADD COLUMN source_song_id TEXT NOT NULL DEFAULT ''`},
+	// False on existing rows. MiniMax never reported truncation, so for
+	// every song before this column the honest value is "not known to be
+	// truncated" — which is what displaying nothing on false means.
+	{"songs", "truncated", `ALTER TABLE songs ADD COLUMN truncated INTEGER NOT NULL DEFAULT 0`},
+}
 
-	// Indexes over the added columns, so they must follow the ALTERs.
-	_, err = s.db.Exec(`
+// addedIndexes cover addedColumns, so migrate runs them after the ALTERs.
+const addedIndexes = `
 CREATE INDEX IF NOT EXISTS idx_jobs_user_id ON jobs(user_id);
 CREATE INDEX IF NOT EXISTS idx_songs_user_created ON songs(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_songs_public_created ON songs(is_public, created_at DESC);
-`)
-	return err
+`
+
+// queryStrings runs a one-column query and returns every value.
+//
+// The rows are closed before it returns, which matters here: the store's
+// single sqlite connection cannot Exec while a result set is still open, and
+// every caller that deletes after reading relies on that.
+func queryStrings(q interface {
+	Query(string, ...any) (*sql.Rows, error)
+}, query string, args ...any) ([]string, error) {
+	rows, err := q.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var v string
+		if err := rows.Scan(&v); err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
 }
 
 // hasColumn reports whether table already has the named column.
@@ -1241,26 +1249,10 @@ func (s *Store) DeleteUser(id string) ([]string, error) {
 		return nil, err
 	}
 
-	rows, err := tx.Query(`SELECT audio_path FROM songs WHERE user_id = ?`, id)
+	paths, err := queryStrings(tx, `SELECT audio_path FROM songs WHERE user_id = ? AND audio_path <> ''`, id)
 	if err != nil {
 		return nil, err
 	}
-	var paths []string
-	for rows.Next() {
-		var p string
-		if err := rows.Scan(&p); err != nil {
-			rows.Close()
-			return nil, err
-		}
-		if p != "" {
-			paths = append(paths, p)
-		}
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return nil, err
-	}
-	rows.Close() // the single sqlite connection cannot Exec while this is open
 
 	// Staged cover recordings belong to this account too, and their bytes need
 	// unlinking just as a song's do. Their names are collected here and
@@ -1268,23 +1260,12 @@ func (s *Store) DeleteUser(id string) ([]string, error) {
 	//
 	// Without this an upload had no owner recorded anywhere, so a deleted
 	// account left its file on disk forever with nothing able to find it.
-	uploadRows, err := tx.Query(`SELECT name FROM cover_uploads WHERE user_id = ?`, id)
+	uploads, err := queryStrings(tx, `SELECT name FROM cover_uploads WHERE user_id = ? AND name <> ''`, id)
 	if err != nil {
 		return nil, err
 	}
-	for uploadRows.Next() {
-		var n string
-		if err := uploadRows.Scan(&n); err != nil {
-			uploadRows.Close()
-			return nil, err
-		}
-		if n != "" {
-			paths = append(paths, filepath.Join(coverUploadDir, n))
-		}
-	}
-	uploadRows.Close()
-	if err := uploadRows.Err(); err != nil {
-		return nil, err
+	for _, n := range uploads {
+		paths = append(paths, filepath.Join(coverUploadDir, n))
 	}
 
 	for _, q := range []string{
@@ -1421,6 +1402,20 @@ func (s *Store) GetSession(token string) (*Session, error) {
 func (s *Store) DeleteSession(token string) error {
 	_, err := s.db.Exec(`DELETE FROM sessions WHERE token_hash = ?`, hashToken(token))
 	return err
+}
+
+// DeleteConfigAdminSessions revokes every static-administrator session.
+//
+// Those sessions have no users row to disable or delete, and the admin
+// dashboard cannot act on them, so without this a session outlived the
+// credentials that created it: removing or rotating ADMIN_USER/ADMIN_PASSWORD
+// left an existing admin signed in for the rest of the session's life.
+func (s *Store) DeleteConfigAdminSessions() (int64, error) {
+	res, err := s.db.Exec(`DELETE FROM sessions WHERE config_admin = 1`)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }
 
 // DeleteUserSessions revokes every session for a user (log out everywhere),

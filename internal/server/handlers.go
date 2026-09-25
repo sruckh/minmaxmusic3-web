@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -118,14 +119,6 @@ type jobForm struct {
 // Evidence and the decision: the brain's "Key, Meter and Tempo — not inputs,
 // and the prompt hint does nothing". Read it before proposing them again.
 
-// scoreMetaOf reads the properties the ABC headers carry, for display.
-//
-// Display only, and that is the whole point: key, meter and tempo are things the
-// model *decides* when it writes a score, not things a caller sets. Putting them
-// in the style string does not control them (see the note on jobForm), and there
-// is no request field for them. So the only honest place to show them is here —
-// read back out of the score that was actually produced, the same way the
-// authors' own demo does it.
 // ScoreMeta is what a score's headers say about the music. Every field is a
 // string because all of them are optional: a MiniMax song has no score at all,
 // and a partial one would still be worth showing.
@@ -138,26 +131,45 @@ type ScoreMeta struct {
 // Any reports whether there is anything worth rendering.
 func (m ScoreMeta) Any() bool { return m.Key != "" || m.Meter != "" || m.Tempo != "" }
 
+// BPM is the tempo as a number, 0 when it is not a plain integer. It is what
+// goes into the edit panel's script: Tempo is text from the score, and text in
+// a script expression runs as code.
+func (m ScoreMeta) BPM() int {
+	n, err := strconv.Atoi(m.Tempo)
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
+// scoreMetaOf reads the properties the ABC headers carry, for display.
+//
+// Display only, and that is the whole point: key, meter and tempo are things the
+// model *decides* when it writes a score, not things a caller sets. Putting them
+// in the style string does not control them (see the note on jobForm), and there
+// is no request field for them. So the only honest place to show them is here —
+// read back out of the score that was actually produced, the same way the
+// authors' own demo does it.
 func scoreMetaOf(abc string) ScoreMeta {
 	var m ScoreMeta
 	for _, line := range strings.Split(abc, "\n") {
 		line = strings.TrimSpace(line)
-		// The header block ends at the first music line; a "K:" inside a title
-		// or a comment after that point is not a header.
 		if line == "" || line[0] == '%' || strings.HasPrefix(line, "V:") {
 			continue
 		}
+		// The first of each wins. The header comes before the music, so a later
+		// "K:", "M:" or "Q:" is a change inside the tune rather than what the
+		// song is in — the same rule the worker's live probe applies.
 		switch {
-		case strings.HasPrefix(line, "K:"):
+		case strings.HasPrefix(line, "K:") && m.Key == "":
 			m.Key = strings.TrimSpace(line[2:])
-		case strings.HasPrefix(line, "M:"):
+		case strings.HasPrefix(line, "M:") && m.Meter == "":
 			m.Meter = strings.TrimSpace(line[2:])
-		case strings.HasPrefix(line, "Q:"):
+		case strings.HasPrefix(line, "Q:") && strings.Contains(line, "=") && m.Tempo == "":
 			// Q:1/4=145 — the beat note and the value, of which only the value
 			// is worth showing.
-			if i := strings.IndexByte(line, '='); i >= 0 {
-				m.Tempo = strings.TrimSpace(line[i+1:])
-			}
+			_, v, _ := strings.Cut(line, "=")
+			m.Tempo = strings.TrimSpace(v)
 		}
 	}
 	return m
@@ -185,6 +197,31 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	f := s.jobFormOf(r)
+	if msg := validate(f); msg != "" {
+		s.renderJobError(w, http.StatusBadRequest, msg)
+		return
+	}
+
+	j := &store.Job{
+		ID: worker.NewJobID(), State: store.StateQueued,
+		UserID: s.caller(r).UserID,
+		Lyrics: f.Lyrics, Caption: f.Caption, Title: f.Title, Idea: f.Idea,
+		Duration: f.Duration, Seed: f.Seed,
+		Engine: f.Engine, Cot: f.Cot, Instrumental: f.Instrumental,
+		CreatedAt: time.Now().UTC(),
+	}
+	if err := s.st.CreateJob(j); err != nil {
+		s.renderJobError(w, http.StatusInternalServerError, "Could not queue the job — try again.")
+		return
+	}
+	s.renderJob(w, j)
+}
+
+// jobFormOf reads a generation form, normalising rather than rejecting: an
+// unparseable number keeps its default, and a field the chosen engine does not
+// take is cleared. Rejection is validate's job.
+func (s *Server) jobFormOf(r *http.Request) jobForm {
 	var f jobForm
 	f.Lyrics = strings.TrimSpace(r.FormValue("input"))
 	f.Caption = strings.TrimSpace(r.FormValue("instructions"))
@@ -225,35 +262,7 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	// is the worst of both. A checkbox reaches us only when ticked, so absence
 	// is the false case and needs no parsing.
 	f.Instrumental = f.Engine == store.EngineYue2 && r.FormValue("instrumental") != ""
-
-	if msg := validate(f); msg != "" {
-		s.renderJobError(w, http.StatusBadRequest, msg)
-		return
-	}
-
-	j := &store.Job{
-		ID: worker.NewJobID(), State: store.StateQueued,
-		UserID: s.caller(r).UserID,
-		Lyrics: f.Lyrics, Caption: f.Caption, Title: f.Title, Idea: f.Idea,
-		Duration: f.Duration, Seed: f.Seed,
-		Engine: f.Engine, Cot: f.Cot, Instrumental: f.Instrumental,
-		CreatedAt: time.Now().UTC(),
-	}
-	if err := s.st.CreateJob(j); err != nil {
-		s.renderJobError(w, http.StatusInternalServerError, "Could not queue the job — try again.")
-		return
-	}
-	s.renderJob(w, j)
-}
-
-// editForm is what an edit submission carries. Deliberately small: an edit
-// re-renders from the stored score, so the score is read from the source song
-// rather than posted back by the browser, and the arrangement is what actually
-// changes.
-type editForm struct {
-	Style  string
-	Lyrics string
-	Tempo  int
+	return f
 }
 
 // maxTempo bounds the tempo control. The worker's own validator accepts any
@@ -331,19 +340,8 @@ func (s *Server) handleEditSong(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad form", http.StatusBadRequest)
 		return
 	}
-	if !s.genAllowed(w, r, s.genLimiter, "generation") {
-		return
-	}
-
-	src, err := s.st.Song(r.PathValue("id"), s.caller(r))
-	if err != nil {
-		http.Error(w, "Could not load that song.", http.StatusInternalServerError)
-		return
-	}
-	// A song the caller cannot see must be indistinguishable from one that does
-	// not exist, or the route becomes a probe for other tenants' ids.
-	if src == nil || !s.owns(r, src) {
-		http.NotFound(w, r)
+	src := s.sourceSong(w, r)
+	if src == nil {
 		return
 	}
 	// Only a score-bearing song can be edited. A MiniMax song has no score, and
@@ -355,17 +353,10 @@ func (s *Server) handleEditSong(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var f editForm
-	f.Style = strings.TrimSpace(r.FormValue("instructions"))
-	f.Lyrics = strings.TrimSpace(r.FormValue("input"))
-	if v := strings.TrimSpace(r.FormValue("tempo")); v != "" {
-		n, err := strconv.Atoi(v)
-		if err != nil || n < minTempo || n > maxTempo {
-			s.renderJobError(w, http.StatusBadRequest,
-				fmt.Sprintf("Pick a tempo between %d and %d BPM.", minTempo, maxTempo))
-			return
-		}
-		f.Tempo = n
+	score, msg := editScoreOf(r, src.ScoreABC)
+	if msg != "" {
+		s.renderJobError(w, http.StatusBadRequest, msg)
+		return
 	}
 	// Off unless asked: guidance on an edit has not been listened to yet, and
 	// an edit's point is usually new words or tempo rather than a new sound.
@@ -377,11 +368,11 @@ func (s *Server) handleEditSong(w http.ResponseWriter, r *http.Request) {
 
 	// Everything the form left blank falls back to what the song already has, so
 	// an edit that only changes the tempo does not silently blank the words.
-	style := f.Style
+	style := strings.TrimSpace(r.FormValue("instructions"))
 	if style == "" {
 		style = src.Caption
 	}
-	lyrics := f.Lyrics
+	lyrics := strings.TrimSpace(r.FormValue("input"))
 	if lyrics == "" {
 		lyrics = src.Lyrics
 	}
@@ -397,20 +388,6 @@ func (s *Server) handleEditSong(w http.ResponseWriter, r *http.Request) {
 		s.renderJobError(w, http.StatusBadRequest,
 			"An edit needs lyrics — untick Instrumental, or write some.")
 		return
-	}
-
-	score := src.ScoreABC
-	if f.Tempo > 0 {
-		rewritten, ok := rewriteTempo(score, f.Tempo)
-		if !ok {
-			// A stored score the worker produced always carries Q:, so this
-			// means the row was edited by hand or predates the format. Better to
-			// say so than to queue an edit whose tempo silently did not apply.
-			s.renderJobError(w, http.StatusBadRequest,
-				"That song's score has no tempo to change. Try regenerating it.")
-			return
-		}
-		score = rewritten
 	}
 
 	j := &store.Job{
@@ -440,6 +417,48 @@ func (s *Server) handleEditSong(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.renderJob(w, j)
+}
+
+// sourceSong is the rate-limit and ownership gate shared by edit and cover,
+// run once the form is parsed. It returns nil after answering the request
+// itself.
+func (s *Server) sourceSong(w http.ResponseWriter, r *http.Request) *store.Song {
+	if !s.genAllowed(w, r, s.genLimiter, "generation") {
+		return nil
+	}
+	src, err := s.st.Song(r.PathValue("id"), s.caller(r))
+	if err != nil {
+		http.Error(w, "Could not load that song.", http.StatusInternalServerError)
+		return nil
+	}
+	// A song the caller cannot see must be indistinguishable from one that does
+	// not exist, or the route becomes a probe for other tenants' ids.
+	if src == nil || !s.owns(r, src) {
+		http.NotFound(w, r)
+		return nil
+	}
+	return src
+}
+
+// editScoreOf is the stored score with the form's tempo applied, or a message
+// for the user. A blank tempo leaves the score as it is.
+func editScoreOf(r *http.Request, abc string) (string, string) {
+	v := strings.TrimSpace(r.FormValue("tempo"))
+	if v == "" {
+		return abc, ""
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < minTempo || n > maxTempo {
+		return "", fmt.Sprintf("Pick a tempo between %d and %d BPM.", minTempo, maxTempo)
+	}
+	score, ok := rewriteTempo(abc, n)
+	if !ok {
+		// A stored score the worker produced always carries Q:, so this
+		// means the row was edited by hand or predates the format. Better to
+		// say so than to queue an edit whose tempo silently did not apply.
+		return "", "That song's score has no tempo to change. Try regenerating it."
+	}
+	return score, ""
 }
 
 // rewriteTempo replaces the Q: header, returning false when there is none.
@@ -509,13 +528,10 @@ var tagWords = []string{"[intro", "[verse", "[pre-chorus", "[chorus",
 func badTagLine(lyrics string) bool {
 	for _, line := range strings.Split(lyrics, "\n") {
 		trim := strings.TrimSpace(strings.ToLower(line))
-		for _, t := range tagWords {
-			if strings.HasPrefix(trim, t) {
-				end := strings.Index(trim, "]")
-				if end >= 0 && strings.TrimSpace(trim[end+1:]) != "" {
-					return true // text after the tag on the same line
-				}
-			}
+		_, after, closed := strings.Cut(trim, "]")
+		isTag := slices.ContainsFunc(tagWords, func(t string) bool { return strings.HasPrefix(trim, t) })
+		if isTag && closed && strings.TrimSpace(after) != "" {
+			return true // text after the tag on the same line
 		}
 	}
 	return false
@@ -565,12 +581,12 @@ func (s *Server) handleAudio(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) genAllowed(w http.ResponseWriter, r *http.Request, l *limiter, what string) bool {
-	if l.allow(clientIP(r)) {
+	if l.allow(s.clientIP(r)) {
 		return true
 	}
 	w.Header().Set("Retry-After", "3600")
 	http.Error(w, "Rate limit reached — try again in a little while.", http.StatusTooManyRequests)
-	s.log.Warn("rate limited", "what", what, "ip", clientIP(r))
+	s.log.Warn("rate limited", "what", what, "ip", s.clientIP(r))
 	return false
 }
 

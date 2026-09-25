@@ -32,10 +32,7 @@ func TestAmbiguousSubmittingJobNeverRequeues(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	j := testJob("j1")
-	if err := s.CreateJob(j); err != nil {
-		t.Fatal(err)
-	}
+	j := mustCreateJob(t, s, testJob("j1"))
 	if err := s.TransitionJob(j.ID, StateQueued, StateSubmitting, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -75,10 +72,7 @@ func TestOrphanSubmissionDurablyRecordsRemoteID(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	j := testJob("j2")
-	if err := s.CreateJob(j); err != nil {
-		t.Fatal(err)
-	}
+	j := mustCreateJob(t, s, testJob("j2"))
 	if err := s.TransitionJob(j.ID, StateQueued, StateSubmitting, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -97,13 +91,8 @@ func TestOneSongPerJob(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	now := time.Now().UTC()
 	for _, id := range []string{"song-a", "song-b"} {
-		if err := s.CreateSong(&Song{ID: id, JobID: "job-one", Lyrics: "la",
-			Caption: "pop", Duration: 30, Engine: "stub", Delivery: "base64",
-			AudioPath: "/tmp/x.wav", CreatedAt: now}); err != nil {
-			t.Fatal(err)
-		}
+		mustCreateSong(t, s, testSong(id, "job-one", ""))
 	}
 	songs, err := s.Songs(10, 0, legacy)
 	if err != nil || len(songs) != 1 {
@@ -118,20 +107,9 @@ func TestDeleteSong(t *testing.T) {
 	}
 	defer s.Close()
 
-	j := testJob("job-del")
-	if err := s.CreateJob(j); err != nil {
-		t.Fatal(err)
-	}
+	j := mustCreateJob(t, s, testJob("job-del"))
 
-	now := time.Now().UTC()
-	song := &Song{
-		ID: "song-del", JobID: j.ID, Lyrics: "lyrics", Caption: "caption",
-		Duration: 45, Engine: "diffusers", Delivery: "base64",
-		AudioPath: "/tmp/del.m4a", Title: "Delete Me", CreatedAt: now,
-	}
-	if err := s.CreateSong(song); err != nil {
-		t.Fatal(err)
-	}
+	song := mustCreateSong(t, s, testSong("song-del", j.ID, ""))
 
 	// Verify song exists
 	got, err := s.Song(song.ID, legacy)
@@ -183,15 +161,9 @@ func TestUpdateSongTitle(t *testing.T) {
 	}
 	defer s.Close()
 
-	now := time.Now().UTC()
-	song := &Song{
-		ID: "song-upd", JobID: "j-upd", Lyrics: "la", Caption: "pop",
-		Duration: 30, Engine: "diffusers", Delivery: "base64",
-		AudioPath: "/tmp/u.m4a", Title: "Original Title", CreatedAt: now,
-	}
-	if err := s.CreateSong(song); err != nil {
-		t.Fatal(err)
-	}
+	song := testSong("song-upd", "j-upd", "")
+	song.Title = "Original Title"
+	mustCreateSong(t, s, song)
 
 	if err := s.UpdateSongTitle(song.ID, "New Custom Title", legacy); err != nil {
 		t.Fatalf("UpdateSongTitle failed: %v", err)
@@ -219,9 +191,7 @@ func TestJobAndSongIdeaRoundTrips(t *testing.T) {
 
 	j := testJob("job-idea")
 	j.Idea = "A song about late-night drives"
-	if err := s.CreateJob(j); err != nil {
-		t.Fatal(err)
-	}
+	mustCreateJob(t, s, j)
 	gotJob, err := s.Job(j.ID, legacy)
 	if err != nil || gotJob == nil {
 		t.Fatalf("Job lookup error: %v", err)
@@ -230,15 +200,9 @@ func TestJobAndSongIdeaRoundTrips(t *testing.T) {
 		t.Errorf("job idea = %q, want %q", gotJob.Idea, j.Idea)
 	}
 
-	now := time.Now().UTC()
-	song := &Song{
-		ID: "song-idea", JobID: j.ID, Lyrics: "la", Caption: "pop", Idea: j.Idea,
-		Duration: 30, Engine: "diffusers", Delivery: "base64",
-		AudioPath: "/tmp/idea.m4a", CreatedAt: now,
-	}
-	if err := s.CreateSong(song); err != nil {
-		t.Fatal(err)
-	}
+	song := testSong("song-idea", j.ID, "")
+	song.Idea = j.Idea
+	mustCreateSong(t, s, song)
 	gotSong, err := s.Song(song.ID, legacy)
 	if err != nil || gotSong == nil {
 		t.Fatalf("Song lookup error: %v", err)
@@ -269,6 +233,31 @@ func mustCreateUser(t *testing.T, s *Store, u *User) *User {
 		t.Fatalf("CreateUser(%s): %v", u.Username, err)
 	}
 	return u
+}
+
+func mustCreateJob(t *testing.T, s *Store, j *Job) *Job {
+	t.Helper()
+	if err := s.CreateJob(j); err != nil {
+		t.Fatalf("CreateJob(%s): %v", j.ID, err)
+	}
+	return j
+}
+
+// testSong is a minimal valid song. Tests set only the fields they are about;
+// an empty owner is left for the store to file under the legacy user. The
+// audio path is derived from the id, so a test can predict it.
+func testSong(id, jobID, owner string) *Song {
+	return &Song{ID: id, JobID: jobID, UserID: owner, Lyrics: "la", Caption: "pop",
+		Duration: 30, Engine: "stub", Delivery: "base64",
+		AudioPath: "/tmp/" + id + ".m4a", CreatedAt: time.Now().UTC()}
+}
+
+func mustCreateSong(t *testing.T, s *Store, g *Song) *Song {
+	t.Helper()
+	if err := s.CreateSong(g); err != nil {
+		t.Fatalf("CreateSong(%s): %v", g.ID, err)
+	}
+	return g
 }
 
 // TestMigrateIsIdempotent reopens a populated database repeatedly. Each Open
@@ -448,8 +437,8 @@ func TestUserCRUD(t *testing.T) {
 	if n, err := s.CountPendingUsers(); err != nil || n != 1 {
 		t.Fatalf("after approval CountPendingUsers = %d, err=%v; want 1", n, err)
 	}
-	if got, _ := s.GetUserByID("u1"); got.Status != StatusApproved {
-		t.Fatalf("status = %q, want approved", got.Status)
+	if got, err := s.GetUserByID("u1"); err != nil || got == nil || got.Status != StatusApproved {
+		t.Fatalf("user = %#v, err=%v; want approved", got, err)
 	}
 
 	if err := s.UpdateUserStatus("u1", "bogus"); err == nil {
@@ -628,13 +617,10 @@ func TestDeleteUserSessions(t *testing.T) {
 
 func TestJobAndSongOwnership(t *testing.T) {
 	s := openTemp(t)
-	now := time.Now().UTC()
 
 	j := testJob("j-owned")
 	j.UserID = "u1"
-	if err := s.CreateJob(j); err != nil {
-		t.Fatal(err)
-	}
+	mustCreateJob(t, s, j)
 	got, err := s.Job(j.ID, UserAccess("u1"))
 	if err != nil || got == nil {
 		t.Fatal(err)
@@ -643,11 +629,9 @@ func TestJobAndSongOwnership(t *testing.T) {
 		t.Fatalf("job user_id = %q, want u1", got.UserID)
 	}
 	// An unset owner falls to the legacy id, never the empty string.
-	if err := s.CreateJob(testJob("j-bare")); err != nil {
-		t.Fatal(err)
-	}
-	if got, _ := s.Job("j-bare", legacy); got.UserID != LegacyUserID {
-		t.Fatalf("unowned job user_id = %q, want %q", got.UserID, LegacyUserID)
+	mustCreateJob(t, s, testJob("j-bare"))
+	if got, err := s.Job("j-bare", legacy); err != nil || got == nil || got.UserID != LegacyUserID {
+		t.Fatalf("unowned job = %#v, err=%v; want user_id %q", got, err, LegacyUserID)
 	}
 	queued, err := s.DequeueQueued(10)
 	if err != nil {
@@ -659,17 +643,10 @@ func TestJobAndSongOwnership(t *testing.T) {
 		}
 	}
 
-	pub := &Song{ID: "s-pub", JobID: "j-owned", UserID: "u1", IsPublic: true,
-		Lyrics: "la", Caption: "pop", Duration: 30, Engine: "diffusers",
-		Delivery: "base64", AudioPath: "/tmp/a.m4a", CreatedAt: now}
-	priv := &Song{ID: "s-priv", JobID: "j-bare", UserID: "u2", IsPublic: false,
-		Lyrics: "la", Caption: "pop", Duration: 30, Engine: "diffusers",
-		Delivery: "base64", AudioPath: "/tmp/b.m4a", CreatedAt: now}
-	for _, g := range []*Song{pub, priv} {
-		if err := s.CreateSong(g); err != nil {
-			t.Fatal(err)
-		}
-	}
+	pub := testSong("s-pub", "j-owned", "u1")
+	pub.IsPublic = true
+	mustCreateSong(t, s, pub)
+	mustCreateSong(t, s, testSong("s-priv", "j-bare", "u2"))
 
 	gotPub, err := s.Song("s-pub", UserAccess("u1"))
 	if err != nil || gotPub == nil {
@@ -702,13 +679,9 @@ func TestJobAndSongOwnership(t *testing.T) {
 	}
 
 	// A song created without an owner falls to legacy and stays private.
-	if err := s.CreateSong(&Song{ID: "s-bare", JobID: "j-bare-2", Lyrics: "la",
-		Caption: "pop", Duration: 30, Engine: "stub", Delivery: "base64",
-		AudioPath: "/tmp/c.m4a", CreatedAt: now}); err != nil {
-		t.Fatal(err)
-	}
-	bare, _ := s.Song("s-bare", legacy)
-	if bare.UserID != LegacyUserID || bare.IsPublic {
+	mustCreateSong(t, s, testSong("s-bare", "j-bare-2", ""))
+	bare, err := s.Song("s-bare", legacy)
+	if err != nil || bare == nil || bare.UserID != LegacyUserID || bare.IsPublic {
 		t.Fatalf("unowned song = %#v", bare)
 	}
 
@@ -786,21 +759,14 @@ func TestGetSessionIsIndexed(t *testing.T) {
 // read, rename, or destroy it — with no ownership check written by the caller.
 func TestCrossTenantAccessIsDenied(t *testing.T) {
 	s := openTemp(t)
-	now := time.Now().UTC()
 	alice, bob := UserAccess("alice"), UserAccess("bob")
 
 	j := testJob("job-a")
 	j.UserID = "alice"
-	if err := s.CreateJob(j); err != nil {
-		t.Fatal(err)
-	}
-	song := &Song{ID: "song-a", JobID: "job-a", UserID: "alice",
-		Lyrics: "la", Caption: "pop", Duration: 30, Engine: "diffusers",
-		Delivery: "base64", AudioPath: "/tmp/alice.m4a", Title: "Alice's Song",
-		CreatedAt: now}
-	if err := s.CreateSong(song); err != nil {
-		t.Fatal(err)
-	}
+	mustCreateJob(t, s, j)
+	song := testSong("song-a", "job-a", "alice")
+	song.Title = "Alice's Song"
+	mustCreateSong(t, s, song)
 
 	// Read: bob gets the same answer as for a song that does not exist, so the
 	// API cannot even be used to confirm it is there.
@@ -1039,11 +1005,7 @@ func TestMigrateRebuildsRawTokenSessions(t *testing.T) {
 	}
 	u := mustCreateUser(t, s, testUser("u1", "alice"))
 	now := time.Now().UTC()
-	if err := s.CreateSong(&Song{ID: "s1", JobID: "j1", UserID: u.ID,
-		Lyrics: "la", Caption: "pop", Duration: 30, Engine: "stub",
-		Delivery: "base64", AudioPath: "/tmp/a.m4a", CreatedAt: now}); err != nil {
-		t.Fatal(err)
-	}
+	mustCreateSong(t, s, testSong("s1", "j1", u.ID))
 	// Recreate the round-1 sessions table, raw token as the primary key.
 	if _, err := s.db.Exec(`DROP TABLE sessions;
 CREATE TABLE sessions (
@@ -1105,14 +1067,9 @@ CREATE TABLE sessions (
 // target state is set rather than flipped.
 func TestSetSongPublicIsScopedAndIdempotent(t *testing.T) {
 	s := openTemp(t)
-	now := time.Now().UTC()
 	alice, bob := UserAccess("alice"), UserAccess("bob")
 
-	if err := s.CreateSong(&Song{ID: "s1", JobID: "j1", UserID: "alice",
-		Lyrics: "la", Caption: "pop", Duration: 30, Engine: "stub",
-		Delivery: "base64", AudioPath: "/tmp/a.m4a", CreatedAt: now}); err != nil {
-		t.Fatal(err)
-	}
+	mustCreateSong(t, s, testSong("s1", "j1", "alice"))
 
 	// A non-owner gets (nil, nil) — the same answer as a missing song — and
 	// changes nothing.
@@ -1123,8 +1080,8 @@ func TestSetSongPublicIsScopedAndIdempotent(t *testing.T) {
 	if got != nil {
 		t.Fatalf("bob shared alice's song: %#v", got)
 	}
-	if g, _ := s.Song("s1", alice); g.IsPublic {
-		t.Fatal("a non-owner's write took effect")
+	if g, err := s.Song("s1", alice); err != nil || g == nil || g.IsPublic {
+		t.Fatalf("a non-owner's write took effect: %#v, err=%v", g, err)
 	}
 	if got, err := s.SetSongPublic("no-such-song", true, alice); err != nil || got != nil {
 		t.Fatalf("missing song = %#v, err=%v; want nil, nil", got, err)
@@ -1178,12 +1135,9 @@ func TestPartitionedReadsAndClamping(t *testing.T) {
 	now := time.Now().UTC()
 	mk := func(id, owner string, public bool, age time.Duration) {
 		t.Helper()
-		if err := s.CreateSong(&Song{ID: id, JobID: "j-" + id, UserID: owner,
-			IsPublic: public, Lyrics: "la", Caption: "pop", Duration: 30,
-			Engine: "stub", Delivery: "base64", AudioPath: "/tmp/" + id,
-			CreatedAt: now.Add(-age)}); err != nil {
-			t.Fatal(err)
-		}
+		g := testSong(id, "j-"+id, owner)
+		g.IsPublic, g.CreatedAt = public, now.Add(-age)
+		mustCreateSong(t, s, g)
 	}
 	mk("a-new", "alice", false, 1*time.Second)
 	mk("a-mid", "alice", true, 2*time.Second)
@@ -1304,30 +1258,20 @@ func TestDeleteUserCascadesInOneTransaction(t *testing.T) {
 	doomed := mustCreateUser(t, s, testUser("u-doomed", "doomed"))
 	keeper := mustCreateUser(t, s, testUser("u-keeper", "keeper"))
 
-	mkSong := func(id, owner, path string) {
-		t.Helper()
-		if err := s.CreateSong(&Song{ID: id, JobID: "j-" + id, UserID: owner,
-			Lyrics: "la", Caption: "pop", Duration: 30, Engine: "stub",
-			Delivery: "base64", AudioPath: path, CreatedAt: now}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	mkSong("d1", doomed.ID, "/tmp/d1.m4a")
-	mkSong("d2", doomed.ID, "/tmp/d2.m4a")
-	mkSong("k1", keeper.ID, "/tmp/k1.m4a")
+	// testSong puts each song's audio at /tmp/<id>.m4a, which is what
+	// DeleteUser must hand back below.
+	mustCreateSong(t, s, testSong("d1", "j-d1", doomed.ID))
+	mustCreateSong(t, s, testSong("d2", "j-d2", doomed.ID))
+	mustCreateSong(t, s, testSong("k1", "j-k1", keeper.ID))
 
 	for _, id := range []string{"jd1", "jd2"} {
 		j := testJob(id)
 		j.UserID = doomed.ID
-		if err := s.CreateJob(j); err != nil {
-			t.Fatal(err)
-		}
+		mustCreateJob(t, s, j)
 	}
 	jk := testJob("jk1")
 	jk.UserID = keeper.ID
-	if err := s.CreateJob(jk); err != nil {
-		t.Fatal(err)
-	}
+	mustCreateJob(t, s, jk)
 	if err := s.CreateSession(testToken("doomed"), &Session{UserID: doomed.ID,
 		Username: "doomed", CreatedAt: now, ExpiresAt: now.Add(time.Hour)}); err != nil {
 		t.Fatal(err)
@@ -1347,21 +1291,21 @@ func TestDeleteUserCascadesInOneTransaction(t *testing.T) {
 	}
 
 	// Everything of theirs is gone, even to an admin.
-	if u, _ := s.GetUserByID(doomed.ID); u != nil {
-		t.Error("user survived")
+	if u, err := s.GetUserByID(doomed.ID); err != nil || u != nil {
+		t.Errorf("user survived: %#v, err=%v", u, err)
 	}
 	for _, id := range []string{"d1", "d2"} {
-		if g, _ := s.Song(id, AdminAccess("root")); g != nil {
-			t.Errorf("song %s survived", id)
+		if g, err := s.Song(id, AdminAccess("root")); err != nil || g != nil {
+			t.Errorf("song %s survived: err=%v", id, err)
 		}
 	}
 	for _, id := range []string{"jd1", "jd2"} {
-		if j, _ := s.Job(id, AdminAccess("root")); j != nil {
-			t.Errorf("job %s survived", id)
+		if j, err := s.Job(id, AdminAccess("root")); err != nil || j != nil {
+			t.Errorf("job %s survived: err=%v", id, err)
 		}
 	}
-	if sess, _ := s.GetSession(testToken("doomed")); sess != nil {
-		t.Error("session survived")
+	if sess, err := s.GetSession(testToken("doomed")); err != nil || sess != nil {
+		t.Errorf("session survived: err=%v", err)
 	}
 
 	// Nobody else was touched.
@@ -1458,10 +1402,7 @@ func TestJobStartedAtIsNilUntilAGPUStampsIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	j := testJob("j1")
-	if err := s.CreateJob(j); err != nil {
-		t.Fatal(err)
-	}
+	mustCreateJob(t, s, testJob("j1"))
 
 	got, err := s.Job("j1", legacy)
 	if err != nil {
@@ -1561,8 +1502,8 @@ func TestCoverLinkMintResolveAndExpire(t *testing.T) {
 	if err != nil {
 		t.Fatalf("minting a short-lived link: %v", err)
 	}
-	if k, _, _ := s.CoverLink(lapsed); k != "" {
-		t.Error("an expired link still resolves")
+	if k, _, err := s.CoverLink(lapsed); err != nil || k != "" {
+		t.Errorf("an expired link still resolves: err=%v", err)
 	}
 
 	// And the purge removes it, since nothing else would — unlike a job or a
@@ -1661,13 +1602,7 @@ func TestDeleteUserDropsItsCoverLinks(t *testing.T) {
 	other := mustCreateUser(t, s, testUser("u-keeper", "keeper"))
 
 	songID := "song-of-linker"
-	if err := s.CreateSong(&Song{
-		ID: songID, JobID: "j1", UserID: u.ID, Lyrics: "la", Caption: "pop",
-		Duration: 30, Engine: EngineYue2, Delivery: "s3", AudioPath: "/tmp/x.m4a",
-		Title: "t", CreatedAt: time.Now().UTC(),
-	}); err != nil {
-		t.Fatalf("CreateSong: %v", err)
-	}
+	mustCreateSong(t, s, testSong(songID, "j1", u.ID))
 	if err := s.RecordCoverUpload("upload-of-linker", u.ID); err != nil {
 		t.Fatalf("RecordCoverUpload: %v", err)
 	}
@@ -1680,13 +1615,7 @@ func TestDeleteUserDropsItsCoverLinks(t *testing.T) {
 		t.Fatalf("link: %v", err)
 	}
 	keepID := "song-of-keeper"
-	if err := s.CreateSong(&Song{
-		ID: keepID, JobID: "j2", UserID: other.ID, Lyrics: "la", Caption: "pop",
-		Duration: 30, Engine: EngineYue2, Delivery: "s3", AudioPath: "/tmp/y.m4a",
-		Title: "t", CreatedAt: time.Now().UTC(),
-	}); err != nil {
-		t.Fatalf("CreateSong: %v", err)
-	}
+	mustCreateSong(t, s, testSong(keepID, "j2", other.ID))
 	if _, err := s.CreateCoverLink(CoverLinkAudio, keepID, time.Hour); err != nil {
 		t.Fatalf("link: %v", err)
 	}
@@ -1729,8 +1658,8 @@ func TestPurgeExpiredCoverLinks(t *testing.T) {
 	if n != 1 {
 		t.Errorf("purged %d rows, want 1", n)
 	}
-	if k, _, _ := s.CoverLink(dead); k != "" {
-		t.Error("the lapsed link survived the purge")
+	if k, _, err := s.CoverLink(dead); err != nil || k != "" {
+		t.Errorf("the lapsed link survived the purge: err=%v", err)
 	}
 	if k, _, _ := s.CoverLink(live); k == "" {
 		t.Error("the purge removed a live link")

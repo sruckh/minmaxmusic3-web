@@ -23,6 +23,11 @@ services:
       # request-Host trust.
       MM3_PUBLIC_URL: ${MM3_PUBLIC_URL:-}
       MM3_MAX_IN_FLIGHT: ${MM3_MAX_IN_FLIGHT:-2}
+      # The header the rate limits read the visitor's address from. Cloudflare
+      # sets CF-Connecting-IP itself, overwriting any client value. Only valid
+      # while the proxy host accepts traffic from Cloudflare alone: reachable
+      # directly, a client could send its own value and dodge the limits.
+      MM3_CLIENT_IP_HEADER: ${MM3_CLIENT_IP_HEADER:-CF-Connecting-IP}
       # Universal Auth machine identity — the entrypoint trades these for a
       # short-lived token and runs the app under `infisical run`, which puts
       # the app secrets straight into the app's environment. Export them into

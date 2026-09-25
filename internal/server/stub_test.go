@@ -201,6 +201,20 @@ func newTestEnvWith(t *testing.T, tweak func(*config.Config)) (http.Handler, *st
 }
 
 // waitUntil polls cond until true or the deadline; fails the test on timeout.
+// completeFirstRun waits for the worker to submit exactly one job to the stub,
+// then lets that job finish.
+func (u *stubUpstream) completeFirstRun(t *testing.T) {
+	t.Helper()
+	waitUntil(t, 10*time.Second, func() bool {
+		u.mu.Lock()
+		defer u.mu.Unlock()
+		return u.RunCalls == 1
+	}, "worker to submit one job")
+	u.mu.Lock()
+	u.Completed = true
+	u.mu.Unlock()
+}
+
 func waitUntil(t *testing.T, d time.Duration, cond func() bool, what string) {
 	t.Helper()
 	deadline := time.Now().Add(d)

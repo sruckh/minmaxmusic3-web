@@ -173,7 +173,7 @@
 
          The score is read from the stored copy, never posted back. -->
     <section class="panel" style="margin-bottom: calc(var(--unit)*2)"
-             x-data="{ open: false, tempo: {{with .Score}}{{.Tempo}}{{else}}0{{end}} }">
+             x-data="{ open: false, tempo: {{with .Score}}{{.BPM}}{{else}}0{{end}} }">
       <div class="accordion-header" @click="open = !open" role="button" tabindex="0">
         <span class="eyebrow"><span class="dot" style="background:var(--ai)"></span>EDIT</span>
         <span class="accordion-toggle-icon" :class="{ 'open': open }">▼</span>

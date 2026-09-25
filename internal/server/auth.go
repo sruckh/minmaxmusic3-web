@@ -164,7 +164,7 @@ func burnPasswordCheck() {
 // isTLS reports whether the client's connection is HTTPS.
 //
 // Behind the reverse proxy r.TLS is nil even for HTTPS, so X-Forwarded-Proto
-// is consulted. Unlike the client IP in ratelimit.go, trusting this header is
+// is consulted. Unlike the client-IP header in ratelimit.go, trusting this is
 // safe: a forged value can only *add* the Secure attribute. It cannot remove
 // one, so the worst an attacker achieves by lying is that their own cookie
 // stops being sent over plain HTTP.
@@ -362,7 +362,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		burnPasswordCheck()
 	}
 	if !ok {
-		s.log.Warn("login failed", "ip", clientIP(r)) // never the credentials
+		s.log.Warn("login failed", "ip", s.clientIP(r)) // never the credentials
 		s.renderLogin(w, http.StatusUnauthorized, invalidCredentials, username, next)
 		return
 	}
@@ -444,10 +444,10 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 // authAllowed throttles a credential endpoint per IP. It answers with the
 // login page rather than a bare error so the browser flow stays intact.
 func (s *Server) authAllowed(w http.ResponseWriter, r *http.Request, l *limiter, what string) bool {
-	if l.allow(clientIP(r)) {
+	if l.allow(s.clientIP(r)) {
 		return true
 	}
-	s.log.Warn("rate limited", "what", what, "ip", clientIP(r))
+	s.log.Warn("rate limited", "what", what, "ip", s.clientIP(r))
 	w.Header().Set("Retry-After", "900")
 	s.renderLogin(w, http.StatusTooManyRequests,
 		"Too many attempts. Wait a few minutes and try again.", "", r.URL.Query().Get("next"))
