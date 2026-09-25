@@ -1,6 +1,7 @@
 package server
 
 import (
+	"cmp"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -95,10 +96,8 @@ func (s *Server) publicSection(r *http.Request, page int) (songSection, error) {
 	}
 	sec := newSection("public", "Community Songs", page, songs,
 		"Nothing has been shared yet. Publish one of your own songs to start the community library.")
-	a := s.caller(r)
 	for i := range sec.Songs {
-		g := sec.Songs[i].Song
-		sec.Songs[i].CanEdit = a.Admin || (a.UserID != "" && a.UserID == g.UserID)
+		sec.Songs[i].CanEdit = s.owns(r, sec.Songs[i].Song)
 	}
 	return sec, nil
 }
@@ -148,21 +147,21 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 // public allowlist, so Stage 03's default-deny requires an approved session,
 // and the query itself is scoped to the session user.
 func (s *Server) handleHistoryPersonal(w http.ResponseWriter, r *http.Request) {
-	sec, err := s.personalSection(r, pageParam(r, "page"))
-	if err != nil {
-		s.log.Error("history personal", "err", err)
-		http.Error(w, "Could not load your songs.", http.StatusInternalServerError)
-		return
-	}
-	s.execute(w, "songs-section.html", sec)
+	s.sectionFragment(w, r, s.personalSection, "history personal", "Could not load your songs.")
 }
 
 // handleHistoryPublic is the htmx fragment for the community library.
 func (s *Server) handleHistoryPublic(w http.ResponseWriter, r *http.Request) {
-	sec, err := s.publicSection(r, pageParam(r, "page"))
+	s.sectionFragment(w, r, s.publicSection, "history public", "Could not load the community library.")
+}
+
+// sectionFragment renders one page of one section, for the fragment routes.
+func (s *Server) sectionFragment(w http.ResponseWriter, r *http.Request,
+	load func(*http.Request, int) (songSection, error), what, msg string) {
+	sec, err := load(r, pageParam(r, "page"))
 	if err != nil {
-		s.log.Error("history public", "err", err)
-		http.Error(w, "Could not load the community library.", http.StatusInternalServerError)
+		s.log.Error(what, "err", err)
+		http.Error(w, msg, http.StatusInternalServerError)
 		return
 	}
 	s.execute(w, "songs-section.html", sec)
@@ -296,21 +295,26 @@ func (s *Server) handleDeleteSong(w http.ResponseWriter, r *http.Request) {
 			s.log.Warn("delete audio file", "path", g.AudioPath, "err", err)
 		}
 	}
+	answerDelete(w, r)
+}
+
+// answerDelete says where the browser goes once a song is gone. An htmx
+// delete from a list just drops its row, but one from the song's own page
+// must leave it, since that page now 404s. A plain browser always lands on
+// the library.
+func answerDelete(w http.ResponseWriter, r *http.Request) {
 	target := r.URL.Query().Get("redirect")
+	if !isHTMX(r) {
+		http.Redirect(w, r, cmp.Or(target, "/history"), http.StatusSeeOther)
+		return
+	}
 	if target == "" && strings.Contains(r.Header.Get("HX-Current-URL"), "/songs/") {
 		target = "/history"
 	}
-	if isHTMX(r) {
-		if target != "" {
-			w.Header().Set("HX-Redirect", target)
-		}
-		w.WriteHeader(http.StatusOK)
-		return
+	if target != "" {
+		w.Header().Set("HX-Redirect", target)
 	}
-	if target == "" {
-		target = "/history"
-	}
-	http.Redirect(w, r, target, http.StatusSeeOther)
+	w.WriteHeader(http.StatusOK)
 }
 
 // handleUpdateSongTitle updates the title of a song.
