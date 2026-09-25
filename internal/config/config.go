@@ -14,12 +14,19 @@ import (
 )
 
 type Config struct {
-	Addr        string // listen address
-	PublicURL   string
-	WebDir      string // templates + static root, so no CWD dependence
-	DBPath      string
-	AudioDir    string
-	MaxInFlight int
+	Addr      string // listen address
+	PublicURL string
+	// ClientIPHeader names the request header carrying the visitor's address,
+	// for the rate limits. Behind the reverse proxy every request arrives from
+	// the proxy, so the socket address is the same for everyone. Name only a
+	// header the proxy in front sets itself, overwriting anything the client
+	// sent (Cloudflare's CF-Connecting-IP, or X-Real-IP from Nginx): a header
+	// the client can set is a rate-limit bypass. Empty means use the socket.
+	ClientIPHeader string
+	WebDir         string // templates + static root, so no CWD dependence
+	DBPath         string
+	AudioDir       string
+	MaxInFlight    int
 
 	RunPodEndpoint string
 	RunPodAPIKey   string
@@ -91,7 +98,8 @@ func env(key, def string) string {
 func Load() (*Config, error) {
 	c := &Config{
 		Addr:               env("MM3_ADDR", ":8080"),
-		PublicURL:          env("MM3_PUBLIC_URL", ""),      // optional pin for the trusted external origin
+		PublicURL:          env("MM3_PUBLIC_URL", ""), // optional pin for the trusted external origin
+		ClientIPHeader:     os.Getenv("MM3_CLIENT_IP_HEADER"),
 		WebDir:             env("MM3_WEB_DIR", "/app/web"), // absolute: no CWD dependence
 		DBPath:             env("MM3_DB_PATH", "/data/mm3.db"),
 		AudioDir:           env("MM3_AUDIO_DIR", "/data/audio"),
@@ -129,8 +137,8 @@ func Load() (*Config, error) {
 // Summary returns a loggable one-line status: values for non-secrets,
 // presence flags for secrets.
 func (c *Config) Summary() string {
-	return fmt.Sprintf("addr=%s web=%s db=%s audio=%s in_flight=%d runpod_endpoint=%s runpod_key=%t yue2_endpoint=%s yue2_enabled=%t yue2_own_key=%t llm_base=%s llm_model=%s llm_key=%t llm_thinking=%s llm_reasoning_effort=%s admin_user=%s admin_password=%t admin_login=%t",
-		c.Addr, c.WebDir, c.DBPath, c.AudioDir, c.MaxInFlight,
+	return fmt.Sprintf("addr=%s client_ip_header=%s web=%s db=%s audio=%s in_flight=%d runpod_endpoint=%s runpod_key=%t yue2_endpoint=%s yue2_enabled=%t yue2_own_key=%t llm_base=%s llm_model=%s llm_key=%t llm_thinking=%s llm_reasoning_effort=%s admin_user=%s admin_password=%t admin_login=%t",
+		c.Addr, present(c.ClientIPHeader), c.WebDir, c.DBPath, c.AudioDir, c.MaxInFlight,
 		present(c.RunPodEndpoint), c.RunPodAPIKey != "",
 		present(c.Yue2Endpoint), c.Yue2Enabled(), c.Yue2APIKey != "",
 		present(c.LLMBaseURL), present(c.LLMModelID), c.LLMAPIKey != "",

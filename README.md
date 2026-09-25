@@ -204,6 +204,8 @@ Both must be set in the Infisical project (`dev` environment) alongside `RUNPOD_
 
 Recovering from that state means setting both secrets in Infisical and restarting the container. There is no CLI, no bootstrap flag, and no self-service escape hatch.
 
+Every restart signs the administrator out. Changing or removing these secrets only takes effect after a restart, so ending the administrator's sessions at startup is what stops an old session from keeping admin rights after the password is changed. Users' sessions are not affected.
+
 ### First sign-in
 
 1. Open `https://<your-host>/login`.
@@ -314,6 +316,7 @@ Values marked *(Infisical)* have no default. They are stored in the Infisical pr
 |---|---|---|
 | `MM3_ADDR` | `:8080` | Server listen address. |
 | `MM3_PUBLIC_URL` | *(unset)* | Optional canonical external origin, trusted as a same-origin source for state-changing requests behind the reverse proxy. Unset, a same-origin write must present this request's own Host — which any correctly forwarded proxy already does. Bring-up loads it automatically from the operator's local `~/.config/mm3-web-infisical/infisical.env`; set it there rather than in any tracked file. |
+| `MM3_CLIENT_IP_HEADER` | `CF-Connecting-IP` in compose; unset otherwise | Header the rate limits read the visitor's address from. Behind the proxy every request comes from the proxy, so without it the whole site shares one login and generation budget. Name only a header the proxy in front overwrites; if the proxy host is reachable without going through Cloudflare, clients can set this header themselves and dodge the limits. |
 | `MM3_WEB_DIR` | `/app/web` | Directory containing web templates and static assets. |
 | `MM3_DB_PATH` | `/data/mm3.db` | SQLite database file path. |
 | `MM3_AUDIO_DIR` | `/data/audio` | Output directory for audio M4A files. |

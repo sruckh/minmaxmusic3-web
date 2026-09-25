@@ -1404,6 +1404,20 @@ func (s *Store) DeleteSession(token string) error {
 	return err
 }
 
+// DeleteConfigAdminSessions revokes every static-administrator session.
+//
+// Those sessions have no users row to disable or delete, and the admin
+// dashboard cannot act on them, so without this a session outlived the
+// credentials that created it: removing or rotating ADMIN_USER/ADMIN_PASSWORD
+// left an existing admin signed in for the rest of the session's life.
+func (s *Store) DeleteConfigAdminSessions() (int64, error) {
+	res, err := s.db.Exec(`DELETE FROM sessions WHERE config_admin = 1`)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
 // DeleteUserSessions revokes every session for a user (log out everywhere),
 // returning how many were removed.
 func (s *Store) DeleteUserSessions(userID string) (int64, error) {

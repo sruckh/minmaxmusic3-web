@@ -3,6 +3,7 @@ package server
 import (
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -36,8 +37,20 @@ func (l *limiter) allow(key string) bool {
 	return true
 }
 
-func clientIP(r *http.Request) string {
-	// Behind NPM the socket peer is the proxy; trust nothing else.
+// clientIP is the key every rate limit counts under.
+//
+// Behind the proxy the socket peer is the proxy itself, the same for every
+// visitor, so keying on it gives the whole site one shared bucket: one
+// anonymous client's failed logins would lock everyone out. The configured
+// header carries the real visitor instead. Its value must parse as an address;
+// anything else falls back to the socket rather than becoming a key the
+// client chose.
+func (s *Server) clientIP(r *http.Request) string {
+	if h := s.cfg.ClientIPHeader; h != "" {
+		if ip := net.ParseIP(strings.TrimSpace(r.Header.Get(h))); ip != nil {
+			return ip.String()
+		}
+	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		return r.RemoteAddr

@@ -155,6 +155,17 @@ func (s *Server) Start() error {
 		return fmt.Errorf("opening store: %w", err)
 	}
 	s.st = st
+	// The admin credentials come from the environment, which only changes
+	// with a restart. Ending every static-admin session here is what makes
+	// removing or rotating them take effect: the admin signs in again, under
+	// whatever the credentials now are.
+	n, err := st.DeleteConfigAdminSessions()
+	if err != nil {
+		return fmt.Errorf("revoking static-admin sessions: %w", err)
+	}
+	if n > 0 {
+		s.log.Info("static-admin sessions revoked at start", "count", n)
+	}
 	s.wk = worker.New(st, s.rps, s.log, s.cfg.AudioDir, s.cfg.MaxInFlight)
 	return nil
 }

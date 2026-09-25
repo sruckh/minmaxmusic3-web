@@ -131,6 +131,17 @@ type ScoreMeta struct {
 // Any reports whether there is anything worth rendering.
 func (m ScoreMeta) Any() bool { return m.Key != "" || m.Meter != "" || m.Tempo != "" }
 
+// BPM is the tempo as a number, 0 when it is not a plain integer. It is what
+// goes into the edit panel's script: Tempo is text from the score, and text in
+// a script expression runs as code.
+func (m ScoreMeta) BPM() int {
+	n, err := strconv.Atoi(m.Tempo)
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
 // scoreMetaOf reads the properties the ABC headers carry, for display.
 //
 // Display only, and that is the whole point: key, meter and tempo are things the
@@ -570,12 +581,12 @@ func (s *Server) handleAudio(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) genAllowed(w http.ResponseWriter, r *http.Request, l *limiter, what string) bool {
-	if l.allow(clientIP(r)) {
+	if l.allow(s.clientIP(r)) {
 		return true
 	}
 	w.Header().Set("Retry-After", "3600")
 	http.Error(w, "Rate limit reached — try again in a little while.", http.StatusTooManyRequests)
-	s.log.Warn("rate limited", "what", what, "ip", clientIP(r))
+	s.log.Warn("rate limited", "what", what, "ip", s.clientIP(r))
 	return false
 }
 

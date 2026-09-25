@@ -269,3 +269,25 @@ func TestPanelsOfferStyleStrengthAndNewSeed(t *testing.T) {
 		}
 	}
 }
+
+// The score's tempo is text from the model, and the edit panel puts it inside
+// an Alpine expression. Only a number may reach it: anything else would run
+// as script for whoever opens the page.
+func TestEditPanelTempoIsOnlyANumber(t *testing.T) {
+	h, _, s := newTestEnvWith(t, nil)
+	u, tok := mkSession(t, s, "owner", store.StatusApproved, store.RoleUser)
+	g := &store.Song{ID: "s-tempo", JobID: "job-s-tempo", UserID: u.ID,
+		Lyrics: "la", Caption: "pop", Duration: 30, Engine: store.EngineYue2,
+		Delivery: "s3", AudioPath: "/nonexistent.m4a", CreatedAt: time.Now().UTC(),
+		ScoreABC: "X:1\nM:4/4\nQ:1/4=1, open: (window.MARK = 1)\nK:C\nV:1\nZ|\n"}
+	if err := s.st.CreateSong(g); err != nil {
+		t.Fatal(err)
+	}
+	body := do(h, "GET", "/songs/"+g.ID, cookieFor(tok)).Body.String()
+	if !strings.Contains(body, "tempo: 0 }") {
+		t.Error("a non-numeric tempo did not render as 0 in the edit panel")
+	}
+	if strings.Contains(body, "tempo: 1, open") {
+		t.Error("score text reached the Alpine expression")
+	}
+}

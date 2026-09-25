@@ -585,3 +585,86 @@ func present(v string) string {
 	}
 	return "set"
 }
+
+// Behind the proxy every request comes from the proxy's address, so the rate
+// limits must count the visitor the proxy names, not the socket. Otherwise one
+// anonymous client's failed logins lock every other user out.
+func TestLoginLimitIsPerVisitorBehindTheProxy(t *testing.T) {
+	useBcryptCost(t, bcrypt.MinCost)
+	h, _, s := newTestEnvWith(t, func(c *config.Config) { c.ClientIPHeader = "CF-Connecting-IP" })
+	hash, err := hashPassword("victim-password-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.st.CreateUser(&store.User{ID: newUserID(), Username: "victim",
+		PasswordHash: hash, Status: store.StatusApproved, Role: store.RoleUser}); err != nil {
+		t.Fatal(err)
+	}
+	login := func(visitor, user, pass string) int {
+		req := httptest.NewRequest("POST", "/login", strings.NewReader(url.Values{
+			"username": {user}, "password": {pass}}.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.RemoteAddr = "172.18.0.5:40000" // the proxy, for every visitor
+		req.Header.Set("CF-Connecting-IP", visitor)
+		res := httptest.NewRecorder()
+		h.ServeHTTP(res, req)
+		return res.Code
+	}
+	for i := 0; i < loginLimitPerWindow; i++ {
+		login("203.0.113.9", "nobody", "wrong-password")
+	}
+	if code := login("203.0.113.9", "nobody", "wrong-password"); code != http.StatusTooManyRequests {
+		t.Fatalf("the attacker's own address was not limited: %d", code)
+	}
+	if code := login("198.51.100.7", "victim", "victim-password-1"); code != http.StatusSeeOther {
+		t.Fatalf("another visitor's correct login = %d, want 303", code)
+	}
+}
+
+// A header value that is not an address is ignored, so a client cannot mint
+// fresh rate-limit keys by sending junk; the socket address is used instead.
+func TestClientIPIgnoresANonAddressHeader(t *testing.T) {
+	s := &Server{cfg: &config.Config{ClientIPHeader: "CF-Connecting-IP"}}
+	for header, want := range map[string]string{
+		"203.0.113.9":      "203.0.113.9",
+		" 2001:db8::1 ":    "2001:db8::1",
+		"":                 "172.18.0.5",
+		"not-an-ip":        "172.18.0.5",
+		"1.2.3.4, 5.6.7.8": "172.18.0.5",
+	} {
+		req := httptest.NewRequest("GET", "/", nil)
+		req.RemoteAddr = "172.18.0.5:40000"
+		req.Header.Set("CF-Connecting-IP", header)
+		if got := s.clientIP(req); got != want {
+			t.Errorf("clientIP with header %q = %q, want %q", header, got, want)
+		}
+	}
+}
+
+// A static-admin session must not outlive the credentials that created it.
+// Those credentials change only with a restart, so Start ends every such
+// session; a user's session is untouched.
+func TestStartRevokesStaticAdminSessions(t *testing.T) {
+	_, _, s := newTestEnvWith(t, nil)
+	_, userTok := mkSession(t, s, "keeper", store.StatusApproved, store.RoleUser)
+	adminTok, err := store.NewSessionToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := s.st.CreateSession(adminTok, &store.Session{UserID: ConfigAdminUserID,
+		Username: "admin", ConfigAdmin: true, CreatedAt: now, ExpiresAt: now.Add(sessionTTL)}); err != nil {
+		t.Fatal(err)
+	}
+
+	s.Close()
+	if err := s.Start(); err != nil { // a restart, as a credential change requires
+		t.Fatal(err)
+	}
+	if sess, err := s.st.GetSession(adminTok); err != nil || sess != nil {
+		t.Fatalf("static-admin session survived a restart: %#v, err=%v", sess, err)
+	}
+	if sess, err := s.st.GetSession(userTok); err != nil || sess == nil {
+		t.Fatalf("a user's session was revoked too: err=%v", err)
+	}
+}
