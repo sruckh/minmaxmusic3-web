@@ -56,7 +56,9 @@ func TestScoreMetaShowsWhatIsPresent(t *testing.T) {
 // A "K:" after the header block is not a header. The first one wins, because
 // that is the one the format defines and the one abc_score.py reads.
 func TestScoreMetaTakesTheFirstHeaderNotALaterOne(t *testing.T) {
-	abc := "X:1\nK:Am\nM:3/4\nQ:1/4=90\nV: Vocal\nZ|\n% K: not a header\n"
+	// The later fields are bare, not commented out: a "%" line is skipped
+	// anyway, so only a bare one tests which header wins.
+	abc := "X:1\nK:Am\nM:3/4\nQ:1/4=90\nV: Vocal\nZ|\nK:Dm\nM:6/8\nQ:1/4=140\n"
 	m := scoreMetaOf(abc)
 	if m.Key != "Am" {
 		t.Errorf("Key = %q, want Am — a later line must not overwrite it", m.Key)

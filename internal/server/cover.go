@@ -208,19 +208,8 @@ func (s *Server) handleCoverSong(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if !s.genAllowed(w, r, s.genLimiter, "generation") {
-		return
-	}
-
-	src, err := s.st.Song(r.PathValue("id"), s.caller(r))
-	if err != nil {
-		http.Error(w, "Could not load that song.", http.StatusInternalServerError)
-		return
-	}
-	// A song the caller cannot see is indistinguishable from one that does not
-	// exist, so this route cannot probe for other tenants' ids.
-	if src == nil || !s.owns(r, src) {
-		http.NotFound(w, r)
+	src := s.sourceSong(w, r)
+	if src == nil {
 		return
 	}
 	// Cover is YuE2's alone. The worker's other engine has no such mode, and
