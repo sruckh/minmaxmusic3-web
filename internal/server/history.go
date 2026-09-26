@@ -70,8 +70,8 @@ func (sec songSection) Endpoint() string { return "/history/" + sec.Kind }
 // administrator's "My Songs" is their own library and not every song in the
 // system. An admin who wants the whole catalogue has the admin dashboard.
 func (s *Server) personalSection(r *http.Request, page int) (songSection, error) {
-	uc, _ := userFrom(r.Context())
-	if uc == nil {
+	uc, ok := userFrom(r.Context())
+	if !ok {
 		// Unreachable behind the middleware; fail closed rather than assume.
 		return songSection{}, errors.New("history: no user in context")
 	}
