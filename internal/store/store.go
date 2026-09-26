@@ -462,23 +462,29 @@ func (s *Store) migrate() error {
 	if _, err := s.db.Exec(schema); err != nil {
 		return err
 	}
-	// ADD COLUMN has no IF NOT EXISTS, so each is guarded by a table_info
-	// probe.
+	if err := s.addMissingColumns(); err != nil {
+		return err
+	}
+	// Indexes over the added columns, so they must follow the ALTERs.
+	_, err = s.db.Exec(addedIndexes)
+	return err
+}
+
+// addMissingColumns applies each addedColumns ALTER the table still lacks.
+// ADD COLUMN has no IF NOT EXISTS, so each is guarded by a table_info probe.
+func (s *Store) addMissingColumns() error {
 	for _, c := range addedColumns {
 		has, err := s.hasColumn(c.table, c.col)
 		if err != nil {
 			return err
 		}
-		if has {
-			continue
-		}
-		if _, err := s.db.Exec(c.ddl); err != nil {
-			return err
+		if !has {
+			if _, err := s.db.Exec(c.ddl); err != nil {
+				return err
+			}
 		}
 	}
-	// Indexes over the added columns, so they must follow the ALTERs.
-	_, err = s.db.Exec(addedIndexes)
-	return err
+	return nil
 }
 
 // schema is every table as first created. Columns added since then are in
@@ -648,6 +654,39 @@ func queryStrings(q interface {
 	return out, rows.Err()
 }
 
+// execAffecting runs a write that must change at least one row, returning
+// sql.ErrNoRows when it changed none — the answer every scoped write gives for
+// a row that is missing or not the caller's.
+func execAffecting(ex interface {
+	Exec(string, ...any) (sql.Result, error)
+}, query string, args ...any) error {
+	res, err := ex.Exec(query, args...)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+// withTx runs fn in one transaction, committing only when fn succeeds.
+func (s *Store) withTx(fn func(*sql.Tx) error) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := fn(tx); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 // hasColumn reports whether table already has the named column.
 func (s *Store) hasColumn(table, col string) (bool, error) {
 	rows, err := s.db.Query(`SELECT 1 FROM pragma_table_info(?) WHERE name = ?`, table, col)
@@ -711,30 +750,24 @@ func (s *Store) TransitionJob(id, from, to string, set func(assignments map[stri
 		args = append(args, v)
 	}
 	args = append(args, id, from)
-	res, err := s.db.Exec(
-		"UPDATE jobs SET "+join(cols)+" WHERE id = ? AND state = ?", args...)
-	if err != nil {
-		return err
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
+	err := execAffecting(s.db,
+		"UPDATE jobs SET "+strings.Join(cols, ", ")+" WHERE id = ? AND state = ?", args...)
+	if errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("%w: job %s %s -> %s", ErrTransition, id, from, to)
 	}
-	return nil
+	return err
 }
 
 // FailJob marks a job failed from any non-terminal state.
 func (s *Store) FailJob(id, reason string) error {
-	res, err := s.db.Exec(
+	err := execAffecting(s.db,
 		`UPDATE jobs SET state = ?, error = ?, updated_at = ?
 		 WHERE id = ? AND state NOT IN ('succeeded','failed','cancelled')`,
 		StateFailed, reason, time.Now().UTC(), id)
-	if err != nil {
-		return err
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
+	if errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("%w: job %s already terminal", ErrTransition, id)
 	}
-	return nil
+	return err
 }
 
 const jobCols = `id, state, runpod_id, user_id, lyrics, caption, idea, title, duration_s,
@@ -819,16 +852,13 @@ func (s *Store) jobsByState(state string, limit int) ([]*Job, error) {
 // locally-claimed submission. This prevents a CAS error from losing the id
 // and prevents restart from resubmitting a billable remote generation.
 func (s *Store) OrphanSubmission(id, runpodID, reason string) error {
-	res, err := s.db.Exec(`UPDATE jobs SET state = ?, runpod_id = ?, error = ?, updated_at = ?
+	err := execAffecting(s.db, `UPDATE jobs SET state = ?, runpod_id = ?, error = ?, updated_at = ?
 		WHERE id = ? AND state = ?`, StateFailed, runpodID, reason,
 		time.Now().UTC(), id, StateSubmitting)
-	if err != nil {
-		return err
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
+	if errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("%w: job %s is not submitting", ErrTransition, id)
 	}
-	return nil
+	return err
 }
 
 // BumpRetries increments the transient-retry counter, returning the new value.
@@ -1022,28 +1052,23 @@ func (s *Store) DeleteSong(id string, a Access) (*Song, error) {
 	if err != nil || g == nil {
 		return g, err
 	}
-	tx, err := s.db.Begin()
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback()
-
-	res, err := tx.Exec(`DELETE FROM songs WHERE id = ? AND `+ownedBy,
-		append([]any{id}, a.args()...)...)
-	if err != nil {
-		return nil, err
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
+	err = s.withTx(func(tx *sql.Tx) error {
+		if err := execAffecting(tx, `DELETE FROM songs WHERE id = ? AND `+ownedBy,
+			append([]any{id}, a.args()...)...); err != nil {
+			return err
+		}
+		// g.JobID comes from a row the caller was just authorised to delete, not
+		// from user input, so the job goes with it unconditionally.
+		if g.JobID == "" {
+			return nil
+		}
+		_, err := tx.Exec(`DELETE FROM jobs WHERE id = ?`, g.JobID)
+		return err
+	})
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
-	// g.JobID comes from a row the caller was just authorised to delete, not
-	// from user input, so the job goes with it unconditionally.
-	if g.JobID != "" {
-		if _, err := tx.Exec(`DELETE FROM jobs WHERE id = ?`, g.JobID); err != nil {
-			return nil, err
-		}
-	}
-	if err := tx.Commit(); err != nil {
+	if err != nil {
 		return nil, err
 	}
 	return g, nil
@@ -1076,19 +1101,8 @@ func (s *Store) SetSongPublic(id string, public bool, a Access) (*Song, error) {
 // UpdateSongTitle renames a song the caller owns. Renaming someone else's is
 // reported as sql.ErrNoRows — the same answer as a song that does not exist.
 func (s *Store) UpdateSongTitle(id, title string, a Access) error {
-	res, err := s.db.Exec(`UPDATE songs SET title = ? WHERE id = ? AND `+ownedBy,
+	return execAffecting(s.db, `UPDATE songs SET title = ? WHERE id = ? AND `+ownedBy,
 		append([]any{title, id}, a.args()...)...)
-	if err != nil {
-		return err
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if n == 0 {
-		return sql.ErrNoRows
-	}
-	return nil
 }
 
 const userCols = `id, username, password_hash, status, role, created_at, updated_at`
@@ -1161,33 +1175,23 @@ func (s *Store) UpdateUserStatus(id, status string) error {
 	default:
 		return fmt.Errorf("store: unknown user status %q", status)
 	}
-	tx, err := s.db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-
-	// Moving an administrator off approved is a removal for this purpose.
-	if status != StatusApproved {
-		if err := guardLastAdmin(tx, id); err != nil {
+	return s.withTx(func(tx *sql.Tx) error {
+		// Moving an administrator off approved is a removal for this purpose.
+		if status != StatusApproved {
+			if err := guardLastAdmin(tx, id); err != nil {
+				return err
+			}
+		}
+		if err := execAffecting(tx, `UPDATE users SET status = ?, updated_at = ? WHERE id = ?`,
+			status, time.Now().UTC(), id); err != nil {
 			return err
 		}
-	}
-
-	res, err := tx.Exec(`UPDATE users SET status = ?, updated_at = ? WHERE id = ?`,
-		status, time.Now().UTC(), id)
-	if err != nil {
-		return err
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return sql.ErrNoRows
-	}
-	if status != StatusApproved {
-		if _, err := tx.Exec(`DELETE FROM sessions WHERE user_id = ?`, id); err != nil {
-			return err
+		if status == StatusApproved {
+			return nil
 		}
-	}
-	return tx.Commit()
+		_, err := tx.Exec(`DELETE FROM sessions WHERE user_id = ?`, id)
+		return err
+	})
 }
 
 // guardLastAdmin returns ErrLastAdmin when removing the account, or moving it
@@ -1239,16 +1243,27 @@ func guardLastAdmin(tx *sql.Tx, id string) error {
 // Returns ErrLastAdmin rather than stranding the system, and sql.ErrNoRows if
 // there is no such user. Either way nothing is written.
 func (s *Store) DeleteUser(id string) ([]string, error) {
-	tx, err := s.db.Begin()
+	var paths []string
+	err := s.withTx(func(tx *sql.Tx) error {
+		if err := guardLastAdmin(tx, id); err != nil {
+			return err
+		}
+		var err error
+		if paths, err = userFiles(tx, id); err != nil {
+			return err
+		}
+		return deleteUserRows(tx, id)
+	})
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback()
+	return paths, nil
+}
 
-	if err := guardLastAdmin(tx, id); err != nil {
-		return nil, err
-	}
-
+// userFiles is every on-disk file a user owns: their songs' audio and their
+// staged cover recordings. Read inside DeleteUser's transaction, before the
+// rows that name the files go.
+func userFiles(tx *sql.Tx, id string) ([]string, error) {
 	paths, err := queryStrings(tx, `SELECT audio_path FROM songs WHERE user_id = ? AND audio_path <> ''`, id)
 	if err != nil {
 		return nil, err
@@ -1256,7 +1271,7 @@ func (s *Store) DeleteUser(id string) ([]string, error) {
 
 	// Staged cover recordings belong to this account too, and their bytes need
 	// unlinking just as a song's do. Their names are collected here and
-	// returned alongside the audio paths; the rows go in the sweep below.
+	// returned alongside the audio paths; the rows go in deleteUserRows.
 	//
 	// Without this an upload had no owner recorded anywhere, so a deleted
 	// account left its file on disk forever with nothing able to find it.
@@ -1267,7 +1282,12 @@ func (s *Store) DeleteUser(id string) ([]string, error) {
 	for _, n := range uploads {
 		paths = append(paths, filepath.Join(coverUploadDir, n))
 	}
+	return paths, nil
+}
 
+// deleteUserRows removes the user and everything filed under them, returning
+// sql.ErrNoRows when there is no such user.
+func deleteUserRows(tx *sql.Tx, id string) error {
 	for _, q := range []string{
 		// The links this account's songs were served under. Matched by the
 		// song ids, which are read in the same statement — so the order of
@@ -1282,20 +1302,10 @@ func (s *Store) DeleteUser(id string) ([]string, error) {
 		`DELETE FROM sessions WHERE user_id = ?`,
 	} {
 		if _, err := tx.Exec(q, id); err != nil {
-			return nil, err
+			return err
 		}
 	}
-	res, err := tx.Exec(`DELETE FROM users WHERE id = ?`, id)
-	if err != nil {
-		return nil, err
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return nil, sql.ErrNoRows
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, err
-	}
-	return paths, nil
+	return execAffecting(tx, `DELETE FROM users WHERE id = ?`, id)
 }
 
 // ListUsers returns every account, newest signup first.
@@ -1436,15 +1446,4 @@ func (s *Store) DeleteExpiredSessions() (int64, error) {
 		return 0, err
 	}
 	return res.RowsAffected()
-}
-
-func join(parts []string) string {
-	out := ""
-	for i, p := range parts {
-		if i > 0 {
-			out += ", "
-		}
-		out += p
-	}
-	return out
 }
