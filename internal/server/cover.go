@@ -24,7 +24,6 @@ import (
 	"time"
 
 	"github.com/sruckh/minmaxmusic3-web/internal/store"
-	"github.com/sruckh/minmaxmusic3-web/internal/worker"
 )
 
 // coverLinkTTL is how long a minted link stays valid.
@@ -87,37 +86,8 @@ func (s *Server) handleSignedSource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var path string
-	switch kind {
-	case store.CoverLinkAudio:
-		// Admin-scoped deliberately, and this is the one place in the app where
-		// that is the right call rather than a shortcut.
-		//
-		// The ownership predicate exists to stop one *user* reading another's
-		// song. Here there is no user: the caller is the RunPod worker, holding
-		// an opaque token and no identity at all. The token stands in for the
-		// entitlement — it was minted by someone who owned the song, or by an
-		// admin, at the moment they asked for a cover — so re-deriving ownership
-		// at fetch time is not possible and not the question being asked.
-		//
-		// What keeps this honest is that the token names no song: it is looked
-		// up by hash to (kind, ref), so a holder learns only what they were
-		// given, and only until it expires.
-		//
-		// The stored path is absolute and was written by the worker, never by a
-		// caller, so it is not attacker-controlled input.
-		song, err := s.st.Song(ref, store.Access{Admin: true})
-		if err != nil || song == nil || song.AudioPath == "" {
-			http.NotFound(w, r)
-			return
-		}
-		path = song.AudioPath
-	case store.CoverLinkSource:
-		// An upload. filepath.Base defends the join: `ref` came from this
-		// server originally, but a path separator surviving into storage would
-		// turn a signed link into an arbitrary-file read.
-		path = filepath.Join(s.sourceDir(), filepath.Base(ref))
-	default:
+	path := s.signedPath(kind, ref)
+	if path == "" {
 		http.NotFound(w, r)
 		return
 	}
@@ -141,6 +111,42 @@ func (s *Server) handleSignedSource(w http.ResponseWriter, r *http.Request) {
 	http.ServeContent(w, r, "", time.Time{}, f)
 }
 
+// signedPath is the file a link's (kind, ref) names, or "" when there is none
+// to serve.
+func (s *Server) signedPath(kind, ref string) string {
+	switch kind {
+	case store.CoverLinkAudio:
+		// Admin-scoped deliberately, and this is the one place in the app where
+		// that is the right call rather than a shortcut.
+		//
+		// The ownership predicate exists to stop one *user* reading another's
+		// song. Here there is no user: the caller is the RunPod worker, holding
+		// an opaque token and no identity at all. The token stands in for the
+		// entitlement — it was minted by someone who owned the song, or by an
+		// admin, at the moment they asked for a cover — so re-deriving ownership
+		// at fetch time is not possible and not the question being asked.
+		//
+		// What keeps this honest is that the token names no song: it is looked
+		// up by hash to (kind, ref), so a holder learns only what they were
+		// given, and only until it expires.
+		//
+		// The stored path is absolute and was written by the worker, never by a
+		// caller, so it is not attacker-controlled input.
+		song, err := s.st.Song(ref, store.Access{Admin: true})
+		if err != nil || song == nil {
+			return ""
+		}
+		return song.AudioPath
+	case store.CoverLinkSource:
+		// An upload. filepath.Base defends the join: `ref` came from this
+		// server originally, but a path separator surviving into storage would
+		// turn a signed link into an arbitrary-file read.
+		return filepath.Join(s.sourceDir(), filepath.Base(ref))
+	default:
+		return ""
+	}
+}
+
 // resolveCoverSource turns one of the three ways a user can name a recording
 // into a URL the worker can fetch.
 func (s *Server) resolveCoverSource(r *http.Request, songID string) (string, string, error) {
@@ -148,8 +154,7 @@ func (s *Server) resolveCoverSource(r *http.Request, songID string) (string, str
 	//    so making the app download and re-serve it would move bytes twice for
 	//    no benefit.
 	if raw := strings.TrimSpace(r.FormValue("source_url")); raw != "" {
-		u, err := url.Parse(raw)
-		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		if !isFetchableURL(raw) {
 			return "", "", fmt.Errorf("That is not a web address the model can fetch — it needs to start with http:// or https://")
 		}
 		return raw, "", nil
@@ -162,25 +167,8 @@ func (s *Server) resolveCoverSource(r *http.Request, songID string) (string, str
 		if hdr.Size > maxUploadBytes {
 			return "", "", fmt.Errorf("That recording is too large — keep it under %d MB.", maxUploadBytes>>20)
 		}
-		name, err := s.storeUpload(f, hdr.Filename)
-		if err != nil {
-			return "", "", err
-		}
-		// Attribute the file before returning its link. Without this the bytes
-		// have no owner anywhere — the path does not carry one and cover_links
-		// expires — so deleting the account would leave the file on disk
-		// forever with nothing able to find it.
-		if err := s.st.RecordCoverUpload(name, s.caller(r).UserID); err != nil {
-			// The file is already written; drop it rather than leave an
-			// untracked one behind, which is the exact state this prevents.
-			_ = os.Remove(filepath.Join(s.sourceDir(), name))
-			return "", "", err
-		}
-		link, err := s.mintCoverURL(store.CoverLinkSource, name)
-		if err != nil {
-			return "", "", err
-		}
-		return link, "", nil
+		link, err := s.stageUpload(f, hdr.Filename, s.caller(r).UserID)
+		return link, "", err
 	}
 
 	// 3. The song being viewed. This is the default, and the common case: most
@@ -192,21 +180,56 @@ func (s *Server) resolveCoverSource(r *http.Request, songID string) (string, str
 	return link, songID, nil
 }
 
+// isFetchableURL reports whether raw is an absolute http(s) address — the only
+// kind the worker can fetch.
+func isFetchableURL(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	return u.Scheme == "http" || u.Scheme == "https"
+}
+
+// stageUpload stores an uploaded recording, files it under its owner, and
+// returns a link the worker can fetch it by.
+func (s *Server) stageUpload(src io.Reader, filename, userID string) (string, error) {
+	name, err := s.storeUpload(src, filename)
+	if err != nil {
+		return "", err
+	}
+	// Attribute the file before returning its link. Without this the bytes
+	// have no owner anywhere — the path does not carry one and cover_links
+	// expires — so deleting the account would leave the file on disk
+	// forever with nothing able to find it.
+	if err := s.st.RecordCoverUpload(name, userID); err != nil {
+		// The file is already written; drop it rather than leave an
+		// untracked one behind, which is the exact state this prevents.
+		_ = os.Remove(filepath.Join(s.sourceDir(), name))
+		return "", err
+	}
+	return s.mintCoverURL(store.CoverLinkSource, name)
+}
+
+// parseCoverForm reads a cover form. Source recordings arrive as multipart,
+// not a urlencoded form, because one of the three ways to supply them is a
+// file — but a pasted URL or a library choice needs no multipart at all, so a
+// urlencoded body is also acceptable.
+func parseCoverForm(r *http.Request) error {
+	if err := r.ParseMultipartForm(maxUploadBytes); err != nil {
+		return r.ParseForm()
+	}
+	return nil
+}
+
 // handleCoverSong queues a cover of an existing song.
 //
 // A cover has no score to edit, so the form is smaller than an edit's: a target
 // style, and optionally the words. Omit the lyrics and the worker's ASR
 // transcribes them from the recording.
 func (s *Server) handleCoverSong(w http.ResponseWriter, r *http.Request) {
-	// Source recordings arrive as multipart, not a urlencoded form, because one
-	// of the three ways to supply them is a file.
-	if err := r.ParseMultipartForm(maxUploadBytes); err != nil {
-		// A urlencoded body is also acceptable — a pasted URL or a library
-		// choice needs no multipart at all.
-		if err := r.ParseForm(); err != nil {
-			http.Error(w, "bad form", http.StatusBadRequest)
-			return
-		}
+	if err := parseCoverForm(r); err != nil {
+		http.Error(w, "bad form", http.StatusBadRequest)
+		return
 	}
 	src := s.sourceSong(w, r)
 	if src == nil {
@@ -244,9 +267,7 @@ func (s *Server) handleCoverSong(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	j := &store.Job{
-		ID: worker.NewJobID(), State: store.StateQueued,
-		UserID: s.caller(r).UserID,
+	s.queueJob(w, r, "cover", &store.Job{
 		Lyrics: lyrics, Caption: style,
 		Title:  src.Title,
 		Engine: src.Engine,
@@ -261,13 +282,7 @@ func (s *Server) handleCoverSong(w http.ResponseWriter, r *http.Request) {
 		SourceSongID: sourceSongID,
 		Seed:         seedFor(r, src),
 		CfgScale:     scale,
-		CreatedAt:    time.Now().UTC(),
-	}
-	if err := s.st.CreateJob(j); err != nil {
-		s.renderJobError(w, http.StatusInternalServerError, "Could not queue the cover — try again.")
-		return
-	}
-	s.renderJob(w, j)
+	})
 }
 
 // storeUpload writes an uploaded recording to the source directory, returning

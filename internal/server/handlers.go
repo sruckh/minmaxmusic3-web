@@ -207,16 +207,21 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	j := &store.Job{
-		ID: worker.NewJobID(), State: store.StateQueued,
-		UserID: s.caller(r).UserID,
+	s.queueJob(w, r, "job", &store.Job{
 		Lyrics: f.Lyrics, Caption: f.Caption, Title: f.Title, Idea: f.Idea,
 		Duration: f.Duration, Seed: f.Seed,
 		Engine: f.Engine, Cot: f.Cot, Instrumental: f.Instrumental,
-		CreatedAt: time.Now().UTC(),
-	}
+	})
+}
+
+// queueJob files j as a new queued job for the caller and answers with its
+// fragment. what names the job in the failure message: job, edit or cover.
+func (s *Server) queueJob(w http.ResponseWriter, r *http.Request, what string, j *store.Job) {
+	j.ID, j.State = worker.NewJobID(), store.StateQueued
+	j.UserID = s.caller(r).UserID
+	j.CreatedAt = time.Now().UTC()
 	if err := s.st.CreateJob(j); err != nil {
-		s.renderJobError(w, http.StatusInternalServerError, "Could not queue the job — try again.")
+		s.renderJobError(w, http.StatusInternalServerError, "Could not queue the "+what+" — try again.")
 		return
 	}
 	s.renderJob(w, j)
@@ -388,9 +393,7 @@ func (s *Server) handleEditSong(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	j := &store.Job{
-		ID: worker.NewJobID(), State: store.StateQueued,
-		UserID: s.caller(r).UserID,
+	s.queueJob(w, r, "edit", &store.Job{
 		Lyrics: lyrics, Caption: style,
 		// The source's title is kept so the derived song is recognisable in the
 		// library without the user having to name it again.
@@ -408,13 +411,7 @@ func (s *Server) handleEditSong(w http.ResponseWriter, r *http.Request) {
 		Duration:     src.Duration,
 		Seed:         seedFor(r, src),
 		CfgScale:     scale,
-		CreatedAt:    time.Now().UTC(),
-	}
-	if err := s.st.CreateJob(j); err != nil {
-		s.renderJobError(w, http.StatusInternalServerError, "Could not queue the edit — try again.")
-		return
-	}
-	s.renderJob(w, j)
+	})
 }
 
 // sourceSong is the rate-limit and ownership gate shared by edit and cover,
