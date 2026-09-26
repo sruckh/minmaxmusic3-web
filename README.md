@@ -12,6 +12,12 @@
 </p>
 
 <p align="center">
+  <a href="https://repowise.dev/repo/sruckh/minmaxmusic3-web"><img src="https://api.repowise.dev/badge/health/sruckh/minmaxmusic3-web.svg" alt="Code health"></a>
+  <a href="go.mod"><img src="https://img.shields.io/github/go-mod/go-version/sruckh/minmaxmusic3-web?logo=go" alt="Go version"></a>
+  <a href="https://github.com/sruckh/minmaxmusic3-web/commits/main"><img src="https://img.shields.io/github/last-commit/sruckh/minmaxmusic3-web" alt="Last commit"></a>
+</p>
+
+<p align="center">
   <a href="#overview">Overview</a> •
   <a href="#features">Features</a> •
   <a href="#architecture">Architecture</a> •
