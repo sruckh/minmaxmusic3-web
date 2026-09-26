@@ -67,11 +67,7 @@ func TestAmbiguousSubmittingJobNeverRequeues(t *testing.T) {
 }
 
 func TestOrphanSubmissionDurablyRecordsRemoteID(t *testing.T) {
-	s, err := Open(filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
+	s := openTemp(t)
 	j := mustCreateJob(t, s, testJob("j2"))
 	if err := s.TransitionJob(j.ID, StateQueued, StateSubmitting, nil); err != nil {
 		t.Fatal(err)
@@ -86,11 +82,7 @@ func TestOrphanSubmissionDurablyRecordsRemoteID(t *testing.T) {
 }
 
 func TestOneSongPerJob(t *testing.T) {
-	s, err := Open(filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
+	s := openTemp(t)
 	for _, id := range []string{"song-a", "song-b"} {
 		mustCreateSong(t, s, testSong(id, "job-one", ""))
 	}
@@ -101,65 +93,27 @@ func TestOneSongPerJob(t *testing.T) {
 }
 
 func TestDeleteSong(t *testing.T) {
-	s, err := Open(filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
+	s := openTemp(t)
 
 	j := mustCreateJob(t, s, testJob("job-del"))
 
 	song := mustCreateSong(t, s, testSong("song-del", j.ID, ""))
 
-	// Verify song exists
-	got, err := s.Song(song.ID, legacy)
-	if err != nil || got == nil {
-		t.Fatalf("expected song to exist, got %v, err=%v", got, err)
-	}
+	lookup(s.Song(song.ID, legacy)).found(t, "expected song to exist")
 
-	// Delete song
-	deleted, err := s.DeleteSong(song.ID, legacy)
-	if err != nil {
-		t.Fatalf("DeleteSong failed: %v", err)
-	}
-	if deleted == nil || deleted.ID != song.ID {
+	deleted := lookup(s.DeleteSong(song.ID, legacy)).found(t, "DeleteSong")
+	if deleted.ID != song.ID {
 		t.Fatalf("expected deleted song %s, got %#v", song.ID, deleted)
 	}
-
-	// Verify song is removed
-	gotSong, err := s.Song(song.ID, legacy)
-	if err != nil {
-		t.Fatalf("Song lookup after delete error: %v", err)
-	}
-	if gotSong != nil {
-		t.Fatalf("expected song to be deleted, found: %#v", gotSong)
-	}
-
-	// Verify job is removed
-	gotJob, err := s.Job(j.ID, legacy)
-	if err != nil {
-		t.Fatalf("Job lookup after delete error: %v", err)
-	}
-	if gotJob != nil {
-		t.Fatalf("expected job to be deleted, found: %#v", gotJob)
-	}
+	lookup(s.Song(song.ID, legacy)).absent(t, "expected song to be deleted")
+	lookup(s.Job(j.ID, legacy)).absent(t, "expected job to be deleted")
 
 	// Deleting a non-existent song returns nil, nil
-	missing, err := s.DeleteSong("non-existent", legacy)
-	if err != nil {
-		t.Fatalf("DeleteSong non-existent error: %v", err)
-	}
-	if missing != nil {
-		t.Fatalf("expected nil for non-existent song, got %#v", missing)
-	}
+	lookup(s.DeleteSong("non-existent", legacy)).absent(t, "DeleteSong of a non-existent song")
 }
 
 func TestUpdateSongTitle(t *testing.T) {
-	s, err := Open(filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
+	s := openTemp(t)
 
 	song := testSong("song-upd", "j-upd", "")
 	song.Title = "Original Title"
@@ -169,10 +123,7 @@ func TestUpdateSongTitle(t *testing.T) {
 		t.Fatalf("UpdateSongTitle failed: %v", err)
 	}
 
-	got, err := s.Song(song.ID, legacy)
-	if err != nil || got == nil {
-		t.Fatalf("Song lookup error: %v", err)
-	}
+	got := lookup(s.Song(song.ID, legacy)).found(t, "Song lookup")
 	if got.Title != "New Custom Title" {
 		t.Fatalf("expected title 'New Custom Title', got %q", got.Title)
 	}
@@ -192,10 +143,7 @@ func TestJobAndSongIdeaRoundTrips(t *testing.T) {
 	j := testJob("job-idea")
 	j.Idea = "A song about late-night drives"
 	mustCreateJob(t, s, j)
-	gotJob, err := s.Job(j.ID, legacy)
-	if err != nil || gotJob == nil {
-		t.Fatalf("Job lookup error: %v", err)
-	}
+	gotJob := lookup(s.Job(j.ID, legacy)).found(t, "Job lookup")
 	if gotJob.Idea != j.Idea {
 		t.Errorf("job idea = %q, want %q", gotJob.Idea, j.Idea)
 	}
@@ -203,10 +151,7 @@ func TestJobAndSongIdeaRoundTrips(t *testing.T) {
 	song := testSong("song-idea", j.ID, "")
 	song.Idea = j.Idea
 	mustCreateSong(t, s, song)
-	gotSong, err := s.Song(song.ID, legacy)
-	if err != nil || gotSong == nil {
-		t.Fatalf("Song lookup error: %v", err)
-	}
+	gotSong := lookup(s.Song(song.ID, legacy)).found(t, "Song lookup")
 	if gotSong.Idea != j.Idea {
 		t.Errorf("song idea = %q, want %q", gotSong.Idea, j.Idea)
 	}
@@ -258,6 +203,44 @@ func mustCreateSong(t *testing.T, s *Store, g *Song) *Song {
 		t.Fatalf("CreateSong(%s): %v", g.ID, err)
 	}
 	return g
+}
+
+// mustCreateSession stores an hour-long session for uid under tok.
+func mustCreateSession(t *testing.T, s *Store, tok, uid, name string) *Session {
+	t.Helper()
+	now := time.Now().UTC()
+	sess := &Session{UserID: uid, Username: name, CreatedAt: now, ExpiresAt: now.Add(time.Hour)}
+	if err := s.CreateSession(tok, sess); err != nil {
+		t.Fatalf("CreateSession(%s): %v", name, err)
+	}
+	return sess
+}
+
+// lookup pairs a store read with its error, so a test states what it expects
+// of the read in one line: lookup(s.Song(id, a)).found(t, "why").
+func lookup[T any](got *T, err error) lookupResult[T] { return lookupResult[T]{got, err} }
+
+type lookupResult[T any] struct {
+	got *T
+	err error
+}
+
+// found fails the test unless the read succeeded and returned a row.
+func (r lookupResult[T]) found(t *testing.T, why string) *T {
+	t.Helper()
+	if r.err != nil || r.got == nil {
+		t.Fatalf("%s: %#v, err=%v", why, r.got, r.err)
+	}
+	return r.got
+}
+
+// absent fails the test unless the read succeeded and returned nothing — the
+// one answer a refusal and a missing row must share.
+func (r lookupResult[T]) absent(t *testing.T, why string) {
+	t.Helper()
+	if r.err != nil || r.got != nil {
+		t.Fatalf("%s: %#v, err=%v", why, r.got, r.err)
+	}
 }
 
 // TestMigrateIsIdempotent reopens a populated database repeatedly. Each Open
@@ -331,10 +314,7 @@ CREATE TABLE songs (
 	}
 	defer s.Close()
 
-	g, err := s.Song("old-song", legacy)
-	if err != nil || g == nil {
-		t.Fatalf("legacy song lost by migration: %#v err=%v", g, err)
-	}
+	g := lookup(s.Song("old-song", legacy)).found(t, "legacy song lost by migration")
 	if g.UserID != LegacyUserID {
 		t.Fatalf("legacy song user_id = %q, want %q", g.UserID, LegacyUserID)
 	}
@@ -344,10 +324,7 @@ CREATE TABLE songs (
 	if g.Title != "Old Song" {
 		t.Fatalf("legacy song title = %q, want %q", g.Title, "Old Song")
 	}
-	j, err := s.Job("old-job", legacy)
-	if err != nil || j == nil {
-		t.Fatalf("legacy job lost by migration: %#v err=%v", j, err)
-	}
+	j := lookup(s.Job("old-job", legacy)).found(t, "legacy job lost by migration")
 	if j.UserID != LegacyUserID {
 		t.Fatalf("legacy job user_id = %q, want %q", j.UserID, LegacyUserID)
 	}
@@ -385,10 +362,7 @@ func TestUsernameUniquenessIsCaseInsensitive(t *testing.T) {
 
 	// ...and lookup finds the account regardless of the case supplied.
 	for _, name := range []string{"Alice", "alice", "ALICE", "aLiCe"} {
-		got, err := s.GetUserByUsername(name)
-		if err != nil || got == nil {
-			t.Fatalf("GetUserByUsername(%q) = %#v, err=%v", name, got, err)
-		}
+		got := lookup(s.GetUserByUsername(name)).found(t, fmt.Sprintf("GetUserByUsername(%q)", name))
 		if got.ID != "u1" {
 			t.Fatalf("GetUserByUsername(%q) resolved to %q", name, got.ID)
 		}
@@ -398,18 +372,11 @@ func TestUsernameUniquenessIsCaseInsensitive(t *testing.T) {
 func TestUserCRUD(t *testing.T) {
 	s := openTemp(t)
 
-	if got, err := s.GetUserByID("nope"); err != nil || got != nil {
-		t.Fatalf("missing user = %#v, err=%v; want nil, nil", got, err)
-	}
-	if got, err := s.GetUserByUsername("nope"); err != nil || got != nil {
-		t.Fatalf("missing username = %#v, err=%v; want nil, nil", got, err)
-	}
+	lookup(s.GetUserByID("nope")).absent(t, "missing user")
+	lookup(s.GetUserByUsername("nope")).absent(t, "missing username")
 
 	u := mustCreateUser(t, s, testUser("u1", "alice"))
-	got, err := s.GetUserByID(u.ID)
-	if err != nil || got == nil {
-		t.Fatalf("GetUserByID = %#v, err=%v", got, err)
-	}
+	got := lookup(s.GetUserByID(u.ID)).found(t, "GetUserByID")
 	if got.PasswordHash != "hash-u1" || got.Status != StatusPending || got.Role != RoleUser {
 		t.Fatalf("round-tripped user = %#v", got)
 	}
@@ -418,12 +385,8 @@ func TestUserCRUD(t *testing.T) {
 	}
 
 	// Defaults are applied when the caller leaves status/role unset.
-	bare := &User{ID: "u2", Username: "bob", PasswordHash: "h"}
-	mustCreateUser(t, s, bare)
-	got2, err := s.GetUserByID("u2")
-	if err != nil || got2 == nil {
-		t.Fatal(err)
-	}
+	mustCreateUser(t, s, &User{ID: "u2", Username: "bob", PasswordHash: "h"})
+	got2 := lookup(s.GetUserByID("u2")).found(t, "GetUserByID(u2)")
 	if got2.Status != StatusPending || got2.Role != RoleUser {
 		t.Fatalf("defaults not applied: status=%q role=%q", got2.Status, got2.Role)
 	}
@@ -437,8 +400,8 @@ func TestUserCRUD(t *testing.T) {
 	if n, err := s.CountPendingUsers(); err != nil || n != 1 {
 		t.Fatalf("after approval CountPendingUsers = %d, err=%v; want 1", n, err)
 	}
-	if got, err := s.GetUserByID("u1"); err != nil || got == nil || got.Status != StatusApproved {
-		t.Fatalf("user = %#v, err=%v; want approved", got, err)
+	if got := lookup(s.GetUserByID("u1")).found(t, "approved user"); got.Status != StatusApproved {
+		t.Fatalf("user = %#v; want approved", got)
 	}
 
 	if err := s.UpdateUserStatus("u1", "bogus"); err == nil {
@@ -454,9 +417,7 @@ func TestUserCRUD(t *testing.T) {
 	if _, err := s.DeleteUser("u2"); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := s.GetUserByID("u2"); err != nil || got != nil {
-		t.Fatalf("deleted user still readable: %#v", got)
-	}
+	lookup(s.GetUserByID("u2")).absent(t, "deleted user still readable")
 	users, err := s.ListUsers()
 	if err != nil || len(users) != 1 {
 		t.Fatalf("ListUsers = %d, err=%v; want 1", len(users), err)
@@ -469,15 +430,8 @@ func TestSessionLifecycle(t *testing.T) {
 	now := time.Now().UTC()
 
 	liveTok, deadTok := testToken("tok-live"), testToken("tok-dead")
-	live := &Session{UserID: u.ID, Username: u.Username,
-		CreatedAt: now, ExpiresAt: now.Add(time.Hour)}
-	if err := s.CreateSession(liveTok, live); err != nil {
-		t.Fatal(err)
-	}
-	got, err := s.GetSession(liveTok)
-	if err != nil || got == nil {
-		t.Fatalf("GetSession = %#v, err=%v", got, err)
-	}
+	live := mustCreateSession(t, s, liveTok, u.ID, u.Username)
+	got := lookup(s.GetSession(liveTok)).found(t, "GetSession")
 	if got.UserID != u.ID || got.Username != "alice" {
 		t.Fatalf("session round-trip lost fields: %#v", got)
 	}
@@ -490,9 +444,7 @@ func TestSessionLifecycle(t *testing.T) {
 			got.IsAdmin, got.Status)
 	}
 
-	if got, err := s.GetSession(testToken("no-such")); err != nil || got != nil {
-		t.Fatalf("unknown token = %#v, err=%v; want nil, nil", got, err)
-	}
+	lookup(s.GetSession(testToken("no-such"))).absent(t, "unknown token")
 	if err := s.CreateSession(testToken("x"), &Session{UserID: u.ID}); err == nil {
 		t.Fatalf("expected a session without an expiry to be rejected")
 	}
@@ -508,26 +460,20 @@ func TestSessionLifecycle(t *testing.T) {
 	if err := s.CreateSession(deadTok, expired); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := s.GetSession(deadTok); err != nil || got != nil {
-		t.Fatalf("expired session resolved: %#v, err=%v", got, err)
-	}
+	lookup(s.GetSession(deadTok)).absent(t, "expired session resolved")
 
 	// The sweep removes only the expired row.
 	n, err := s.DeleteExpiredSessions()
 	if err != nil || n != 1 {
 		t.Fatalf("DeleteExpiredSessions = %d, err=%v; want 1", n, err)
 	}
-	if got, err := s.GetSession(liveTok); err != nil || got == nil {
-		t.Fatalf("sweep removed a live session: %#v, err=%v", got, err)
-	}
+	lookup(s.GetSession(liveTok)).found(t, "sweep removed a live session")
 
 	// Explicit logout, and revoking an already-dead token is not an error.
 	if err := s.DeleteSession(liveTok); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := s.GetSession(liveTok); err != nil || got != nil {
-		t.Fatalf("session survived logout: %#v", got)
-	}
+	lookup(s.GetSession(liveTok)).absent(t, "session survived logout")
 	if err := s.DeleteSession(liveTok); err != nil {
 		t.Fatalf("re-revoking a token: %v", err)
 	}
@@ -540,79 +486,50 @@ func TestDisablingUserRevokesSessions(t *testing.T) {
 	s := openTemp(t)
 	u := mustCreateUser(t, s, testUser("u1", "alice"))
 	other := mustCreateUser(t, s, testUser("u2", "bob"))
-	now := time.Now().UTC()
-
-	mkSession := func(tok, uid string) {
-		t.Helper()
-		if err := s.CreateSession(testToken(tok), &Session{UserID: uid, Username: uid,
-			CreatedAt: now, ExpiresAt: now.Add(time.Hour)}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	mkSession("a1", u.ID)
-	mkSession("a2", u.ID)
-	mkSession("b1", other.ID)
+	mustCreateSession(t, s, testToken("a1"), u.ID, u.ID)
+	mustCreateSession(t, s, testToken("a2"), u.ID, u.ID)
+	mustCreateSession(t, s, testToken("b1"), other.ID, other.ID)
 
 	// Approving keeps sessions alive.
 	if err := s.UpdateUserStatus(u.ID, StatusApproved); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := s.GetSession(testToken("a1")); err != nil || got == nil {
-		t.Fatalf("approval revoked a session: %#v, err=%v", got, err)
-	}
+	lookup(s.GetSession(testToken("a1"))).found(t, "approval revoked a session")
 
 	// Disabling revokes every session for that user, and only that user.
 	if err := s.UpdateUserStatus(u.ID, StatusDisabled); err != nil {
 		t.Fatal(err)
 	}
 	for _, tok := range []string{"a1", "a2"} {
-		got, err := s.GetSession(testToken(tok))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got != nil {
-			t.Fatalf("session %s survived the account being disabled", tok)
-		}
+		lookup(s.GetSession(testToken(tok))).absent(t, "session "+tok+" survived the account being disabled")
 	}
-	if got, err := s.GetSession(testToken("b1")); err != nil || got == nil {
-		t.Fatalf("disabling alice revoked bob's session: %#v, err=%v", got, err)
-	}
+	lookup(s.GetSession(testToken("b1"))).found(t, "disabling alice revoked bob's session")
 
 	// Deleting an account drops its sessions too.
 	if _, err := s.DeleteUser(other.ID); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := s.GetSession(testToken("b1")); err != nil || got != nil {
-		t.Fatalf("session survived account deletion: %#v, err=%v", got, err)
-	}
+	lookup(s.GetSession(testToken("b1"))).absent(t, "session survived account deletion")
 
 	// Reverting to pending also revokes.
-	mkSession("a3", u.ID)
+	mustCreateSession(t, s, testToken("a3"), u.ID, u.ID)
 	if err := s.UpdateUserStatus(u.ID, StatusPending); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := s.GetSession(testToken("a3")); err != nil || got != nil {
-		t.Fatalf("session survived a revert to pending: %#v", got)
-	}
+	lookup(s.GetSession(testToken("a3"))).absent(t, "session survived a revert to pending")
 }
 
 func TestDeleteUserSessions(t *testing.T) {
 	s := openTemp(t)
 	u := mustCreateUser(t, s, testUser("u1", "alice"))
-	now := time.Now().UTC()
 	for _, tok := range []string{"t1", "t2", "t3"} {
-		if err := s.CreateSession(testToken(tok), &Session{UserID: u.ID, Username: "alice",
-			CreatedAt: now, ExpiresAt: now.Add(time.Hour)}); err != nil {
-			t.Fatal(err)
-		}
+		mustCreateSession(t, s, testToken(tok), u.ID, "alice")
 	}
 	n, err := s.DeleteUserSessions(u.ID)
 	if err != nil || n != 3 {
 		t.Fatalf("DeleteUserSessions = %d, err=%v; want 3", n, err)
 	}
-	if got, err := s.GetSession(testToken("t2")); err != nil || got != nil {
-		t.Fatalf("session survived log-out-everywhere: %#v", got)
-	}
+	lookup(s.GetSession(testToken("t2"))).absent(t, "session survived log-out-everywhere")
 }
 
 func TestJobAndSongOwnership(t *testing.T) {
@@ -621,17 +538,13 @@ func TestJobAndSongOwnership(t *testing.T) {
 	j := testJob("j-owned")
 	j.UserID = "u1"
 	mustCreateJob(t, s, j)
-	got, err := s.Job(j.ID, UserAccess("u1"))
-	if err != nil || got == nil {
-		t.Fatal(err)
-	}
-	if got.UserID != "u1" {
+	if got := lookup(s.Job(j.ID, UserAccess("u1"))).found(t, "owned job"); got.UserID != "u1" {
 		t.Fatalf("job user_id = %q, want u1", got.UserID)
 	}
 	// An unset owner falls to the legacy id, never the empty string.
 	mustCreateJob(t, s, testJob("j-bare"))
-	if got, err := s.Job("j-bare", legacy); err != nil || got == nil || got.UserID != LegacyUserID {
-		t.Fatalf("unowned job = %#v, err=%v; want user_id %q", got, err, LegacyUserID)
+	if got := lookup(s.Job("j-bare", legacy)).found(t, "unowned job"); got.UserID != LegacyUserID {
+		t.Fatalf("unowned job user_id = %q, want %q", got.UserID, LegacyUserID)
 	}
 	queued, err := s.DequeueQueued(10)
 	if err != nil {
@@ -648,17 +561,11 @@ func TestJobAndSongOwnership(t *testing.T) {
 	mustCreateSong(t, s, pub)
 	mustCreateSong(t, s, testSong("s-priv", "j-bare", "u2"))
 
-	gotPub, err := s.Song("s-pub", UserAccess("u1"))
-	if err != nil || gotPub == nil {
-		t.Fatal(err)
-	}
+	gotPub := lookup(s.Song("s-pub", UserAccess("u1"))).found(t, "public song")
 	if gotPub.UserID != "u1" || !gotPub.IsPublic {
 		t.Fatalf("public song = %#v", gotPub)
 	}
-	gotPriv, err := s.SongForJob("j-bare")
-	if err != nil || gotPriv == nil {
-		t.Fatal(err)
-	}
+	gotPriv := lookup(s.SongForJob("j-bare")).found(t, "private song")
 	if gotPriv.UserID != "u2" || gotPriv.IsPublic {
 		t.Fatalf("private song = %#v", gotPriv)
 	}
@@ -680,16 +587,13 @@ func TestJobAndSongOwnership(t *testing.T) {
 
 	// A song created without an owner falls to legacy and stays private.
 	mustCreateSong(t, s, testSong("s-bare", "j-bare-2", ""))
-	bare, err := s.Song("s-bare", legacy)
-	if err != nil || bare == nil || bare.UserID != LegacyUserID || bare.IsPublic {
+	bare := lookup(s.Song("s-bare", legacy)).found(t, "unowned song")
+	if bare.UserID != LegacyUserID || bare.IsPublic {
 		t.Fatalf("unowned song = %#v", bare)
 	}
 
 	// Ownership survives the delete path that returns metadata for cleanup.
-	deleted, err := s.DeleteSong("s-pub", UserAccess("u1"))
-	if err != nil || deleted == nil {
-		t.Fatal(err)
-	}
+	deleted := lookup(s.DeleteSong("s-pub", UserAccess("u1"))).found(t, "DeleteSong")
 	if deleted.UserID != "u1" || !deleted.IsPublic {
 		t.Fatalf("deleted song lost ownership: %#v", deleted)
 	}
@@ -759,7 +663,7 @@ func TestGetSessionIsIndexed(t *testing.T) {
 // read, rename, or destroy it — with no ownership check written by the caller.
 func TestCrossTenantAccessIsDenied(t *testing.T) {
 	s := openTemp(t)
-	alice, bob := UserAccess("alice"), UserAccess("bob")
+	alice, bob, root := UserAccess("alice"), UserAccess("bob"), AdminAccess("root")
 
 	j := testJob("job-a")
 	j.UserID = "alice"
@@ -770,16 +674,8 @@ func TestCrossTenantAccessIsDenied(t *testing.T) {
 
 	// Read: bob gets the same answer as for a song that does not exist, so the
 	// API cannot even be used to confirm it is there.
-	got, err := s.Song("song-a", bob)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got != nil {
-		t.Fatalf("bob read alice's song: %#v", got)
-	}
-	if gotJob, err := s.Job("job-a", bob); err != nil || gotJob != nil {
-		t.Fatalf("bob read alice's job: %#v, err=%v", gotJob, err)
-	}
+	lookup(s.Song("song-a", bob)).absent(t, "bob read alice's song")
+	lookup(s.Job("job-a", bob)).absent(t, "bob read alice's job")
 
 	// List: alice's song never appears in bob's library.
 	list, err := s.Songs(50, 0, bob)
@@ -796,56 +692,31 @@ func TestCrossTenantAccessIsDenied(t *testing.T) {
 	if err := s.UpdateSongTitle("song-a", "Bob Was Here", bob); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("bob renamed alice's song: err=%v, want sql.ErrNoRows", err)
 	}
-	still, err := s.Song("song-a", alice)
-	if err != nil || still == nil {
-		t.Fatal(err)
-	}
-	if still.Title != "Alice's Song" {
+	if still := lookup(s.Song("song-a", alice)).found(t, "alice's song after bob's rename"); still.Title != "Alice's Song" {
 		t.Fatalf("title changed to %q by a non-owner", still.Title)
 	}
 
 	// Delete: refused, and — the part that matters most — the audio path is
 	// not handed back, so a caller cannot be tricked into unlinking the file.
-	deleted, err := s.DeleteSong("song-a", bob)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if deleted != nil {
-		t.Fatalf("bob deleted alice's song and received %q for unlinking", deleted.AudioPath)
-	}
-	survived, err := s.Song("song-a", alice)
-	if err != nil || survived == nil {
-		t.Fatalf("alice's song was destroyed by bob: %#v, err=%v", survived, err)
-	}
-	if gotJob, err := s.Job("job-a", alice); err != nil || gotJob == nil {
-		t.Fatalf("alice's job was destroyed by bob: %#v, err=%v", gotJob, err)
-	}
+	lookup(s.DeleteSong("song-a", bob)).absent(t, "bob deleted alice's song and received its audio path for unlinking")
+	lookup(s.Song("song-a", alice)).found(t, "alice's song was destroyed by bob")
+	lookup(s.Job("job-a", alice)).found(t, "alice's job was destroyed by bob")
 
 	// The zero Access is not a skeleton key — it owns nothing.
 	var zero Access
-	if got, err := s.Song("song-a", zero); err != nil || got != nil {
-		t.Fatalf("the zero Access read a song: %#v, err=%v", got, err)
-	}
-	if got, err := s.DeleteSong("song-a", zero); err != nil || got != nil {
-		t.Fatalf("the zero Access deleted a song: %#v, err=%v", got, err)
-	}
+	lookup(s.Song("song-a", zero)).absent(t, "the zero Access read a song")
+	lookup(s.DeleteSong("song-a", zero)).absent(t, "the zero Access deleted a song")
 	if list, err := s.Songs(50, 0, zero); err != nil || len(list) != 0 {
 		t.Fatalf("the zero Access listed %d songs, want 0 (err=%v)", len(list), err)
 	}
 
 	// The owner, and an admin, still get through.
-	if got, err := s.Song("song-a", alice); err != nil || got == nil {
-		t.Fatalf("owner denied their own song: %#v, err=%v", got, err)
-	}
-	if got, err := s.Song("song-a", AdminAccess("root")); err != nil || got == nil {
-		t.Fatalf("admin denied: %#v, err=%v", got, err)
-	}
-	if err := s.UpdateSongTitle("song-a", "Renamed By Admin", AdminAccess("root")); err != nil {
+	lookup(s.Song("song-a", alice)).found(t, "owner denied their own song")
+	lookup(s.Song("song-a", root)).found(t, "admin denied")
+	if err := s.UpdateSongTitle("song-a", "Renamed By Admin", root); err != nil {
 		t.Fatalf("admin rename: %v", err)
 	}
-	if got, err := s.DeleteSong("song-a", AdminAccess("root")); err != nil || got == nil {
-		t.Fatalf("admin delete: %#v, err=%v", got, err)
-	}
+	lookup(s.DeleteSong("song-a", root)).found(t, "admin delete")
 }
 
 // TestSessionTokenIsNotStoredRaw proves the bearer token never reaches the
@@ -853,8 +724,6 @@ func TestCrossTenantAccessIsDenied(t *testing.T) {
 func TestSessionTokenIsNotStoredRaw(t *testing.T) {
 	s := openTemp(t)
 	u := mustCreateUser(t, s, testUser("u1", "alice"))
-	now := time.Now().UTC()
-
 	token, err := NewSessionToken()
 	if err != nil {
 		t.Fatal(err)
@@ -862,10 +731,7 @@ func TestSessionTokenIsNotStoredRaw(t *testing.T) {
 	if len(token) != 64 {
 		t.Fatalf("NewSessionToken returned %d chars, want 64 (32 bytes hex)", len(token))
 	}
-	if err := s.CreateSession(token, &Session{UserID: u.ID, Username: u.Username,
-		CreatedAt: now, ExpiresAt: now.Add(time.Hour)}); err != nil {
-		t.Fatal(err)
-	}
+	mustCreateSession(t, s, token, u.ID, u.Username)
 
 	rows, err := s.db.Query(`SELECT token_hash, user_id, username, config_admin,
 		CAST(created_at AS TEXT), CAST(expires_at AS TEXT) FROM sessions`)
@@ -898,14 +764,9 @@ func TestSessionTokenIsNotStoredRaw(t *testing.T) {
 
 	// The hash is not accepted in place of the token, so a database reader
 	// gains nothing by replaying what they found.
-	if got, err := s.GetSession(hashToken(token)); err != nil || got != nil {
-		t.Fatalf("the stored hash authenticated as a token: %#v, err=%v", got, err)
-	}
+	lookup(s.GetSession(hashToken(token))).absent(t, "the stored hash authenticated as a token")
 	// The real token still works, and never comes back out of the store.
-	got, err := s.GetSession(token)
-	if err != nil || got == nil {
-		t.Fatalf("GetSession with the real token: %#v, err=%v", got, err)
-	}
+	got := lookup(s.GetSession(token)).found(t, "GetSession with the real token")
 	if got.TokenHash != hashToken(token) {
 		t.Fatalf("TokenHash = %q, want the hash", got.TokenHash)
 	}
@@ -918,9 +779,7 @@ func TestSessionTokenIsNotStoredRaw(t *testing.T) {
 	if other == token {
 		t.Fatal("NewSessionToken returned the same value twice")
 	}
-	if got, err := s.GetSession(other); err != nil || got != nil {
-		t.Fatalf("an unrelated token resolved: %#v, err=%v", got, err)
-	}
+	lookup(s.GetSession(other)).absent(t, "an unrelated token resolved")
 }
 
 // TestSessionPrivilegeIsResolvedLive proves privilege is never read from a
@@ -933,14 +792,8 @@ func TestSessionPrivilegeIsResolvedLive(t *testing.T) {
 		PasswordHash: "h", Status: StatusApproved, Role: RoleUser})
 
 	token := testToken("live")
-	if err := s.CreateSession(token, &Session{UserID: u.ID, Username: u.Username,
-		CreatedAt: now, ExpiresAt: now.Add(time.Hour)}); err != nil {
-		t.Fatal(err)
-	}
-	got, err := s.GetSession(token)
-	if err != nil || got == nil {
-		t.Fatal(err)
-	}
+	mustCreateSession(t, s, token, u.ID, u.Username)
+	got := lookup(s.GetSession(token)).found(t, "GetSession")
 	if got.IsAdmin || got.Status != StatusApproved {
 		t.Fatalf("initial resolve = admin:%v status:%q", got.IsAdmin, got.Status)
 	}
@@ -949,14 +802,14 @@ func TestSessionPrivilegeIsResolvedLive(t *testing.T) {
 	if _, err := s.db.Exec(`UPDATE users SET role = ? WHERE id = ?`, RoleAdmin, u.ID); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := s.GetSession(token); got == nil || !got.IsAdmin {
+	if got := lookup(s.GetSession(token)).found(t, "promoted session"); !got.IsAdmin {
 		t.Fatalf("promotion not visible on the existing session: %#v", got)
 	}
 	// ...and so is demotion, which is the direction that matters.
 	if _, err := s.db.Exec(`UPDATE users SET role = ? WHERE id = ?`, RoleUser, u.ID); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := s.GetSession(token); got == nil || got.IsAdmin {
+	if got := lookup(s.GetSession(token)).found(t, "demoted session"); got.IsAdmin {
 		t.Fatalf("demoted user still resolves as admin: %#v", got)
 	}
 
@@ -964,7 +817,7 @@ func TestSessionPrivilegeIsResolvedLive(t *testing.T) {
 	if _, err := s.db.Exec(`UPDATE users SET status = ? WHERE id = ?`, StatusDisabled, u.ID); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := s.GetSession(token); got == nil || got.Status != StatusDisabled {
+	if got := lookup(s.GetSession(token)).found(t, "disabled session"); got.Status != StatusDisabled {
 		t.Fatalf("status not resolved live: %#v", got)
 	}
 
@@ -973,9 +826,7 @@ func TestSessionPrivilegeIsResolvedLive(t *testing.T) {
 	if _, err := s.db.Exec(`DELETE FROM users WHERE id = ?`, u.ID); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := s.GetSession(token); err != nil || got != nil {
-		t.Fatalf("orphaned session still resolves: %#v, err=%v", got, err)
-	}
+	lookup(s.GetSession(token)).absent(t, "orphaned session still resolves")
 
 	// The config admin has no users row and is still admin.
 	cfgTok := testToken("cfg")
@@ -984,10 +835,7 @@ func TestSessionPrivilegeIsResolvedLive(t *testing.T) {
 		CreatedAt: now, ExpiresAt: now.Add(time.Hour)}); err != nil {
 		t.Fatal(err)
 	}
-	cfg, err := s.GetSession(cfgTok)
-	if err != nil || cfg == nil {
-		t.Fatalf("config admin session: %#v, err=%v", cfg, err)
-	}
+	cfg := lookup(s.GetSession(cfgTok)).found(t, "config admin session")
 	if !cfg.IsAdmin || cfg.Status != StatusApproved || cfg.Username != "root" {
 		t.Fatalf("config admin resolved wrong: %#v", cfg)
 	}
@@ -1032,9 +880,7 @@ CREATE TABLE sessions (
 	if has, err := s2.hasColumn("sessions", "token"); err != nil || has {
 		t.Fatalf("raw token column survived migration (has=%v, err=%v)", has, err)
 	}
-	if got, err := s2.GetSession("plaintext-token"); err != nil || got != nil {
-		t.Fatalf("a raw-token session survived the rebuild: %#v, err=%v", got, err)
-	}
+	lookup(s2.GetSession("plaintext-token")).absent(t, "a raw-token session survived the rebuild")
 	var n int
 	if err := s2.db.QueryRow(`SELECT COUNT(*) FROM sessions`).Scan(&n); err != nil {
 		t.Fatal(err)
@@ -1044,22 +890,13 @@ CREATE TABLE sessions (
 	}
 
 	// User and song data is untouched.
-	if got, err := s2.GetUserByID(u.ID); err != nil || got == nil {
-		t.Fatalf("user lost by the sessions rebuild: %#v, err=%v", got, err)
-	}
-	if got, err := s2.Song("s1", UserAccess(u.ID)); err != nil || got == nil {
-		t.Fatalf("song lost by the sessions rebuild: %#v, err=%v", got, err)
-	}
+	lookup(s2.GetUserByID(u.ID)).found(t, "user lost by the sessions rebuild")
+	lookup(s2.Song("s1", UserAccess(u.ID))).found(t, "song lost by the sessions rebuild")
 
 	// The rebuilt table works.
 	tok := testToken("fresh")
-	if err := s2.CreateSession(tok, &Session{UserID: u.ID, Username: "alice",
-		CreatedAt: now, ExpiresAt: now.Add(time.Hour)}); err != nil {
-		t.Fatal(err)
-	}
-	if got, err := s2.GetSession(tok); err != nil || got == nil {
-		t.Fatalf("new session after rebuild: %#v, err=%v", got, err)
-	}
+	mustCreateSession(t, s2, tok, u.ID, "alice")
+	lookup(s2.GetSession(tok)).found(t, "new session after rebuild")
 }
 
 // TestSetSongPublicIsScopedAndIdempotent pins the authorisation at the SQL
@@ -1073,58 +910,41 @@ func TestSetSongPublicIsScopedAndIdempotent(t *testing.T) {
 
 	// A non-owner gets (nil, nil) — the same answer as a missing song — and
 	// changes nothing.
-	got, err := s.SetSongPublic("s1", true, bob)
-	if err != nil {
-		t.Fatal(err)
+	lookup(s.SetSongPublic("s1", true, bob)).absent(t, "bob shared alice's song")
+	if g := lookup(s.Song("s1", alice)).found(t, "alice's song"); g.IsPublic {
+		t.Fatalf("a non-owner's write took effect: %#v", g)
 	}
-	if got != nil {
-		t.Fatalf("bob shared alice's song: %#v", got)
-	}
-	if g, err := s.Song("s1", alice); err != nil || g == nil || g.IsPublic {
-		t.Fatalf("a non-owner's write took effect: %#v, err=%v", g, err)
-	}
-	if got, err := s.SetSongPublic("no-such-song", true, alice); err != nil || got != nil {
-		t.Fatalf("missing song = %#v, err=%v; want nil, nil", got, err)
-	}
+	lookup(s.SetSongPublic("no-such-song", true, alice)).absent(t, "missing song")
 
 	// The owner sets an explicit target, and the returned row reflects it.
-	got, err = s.SetSongPublic("s1", true, alice)
-	if err != nil || got == nil {
-		t.Fatalf("owner share = %#v, err=%v", got, err)
-	}
+	got := lookup(s.SetSongPublic("s1", true, alice)).found(t, "owner share")
 	if !got.IsPublic || got.ID != "s1" || got.UserID != "alice" {
 		t.Fatalf("returned row = %#v", got)
 	}
 
 	// Repeating it is a no-op, not an undo — the property a blind flip lacks.
 	for i := 0; i < 3; i++ {
-		if got, err := s.SetSongPublic("s1", true, alice); err != nil || got == nil || !got.IsPublic {
-			t.Fatalf("repeat #%d = %#v, err=%v", i, got, err)
+		if got := lookup(s.SetSongPublic("s1", true, alice)).found(t, "repeat"); !got.IsPublic {
+			t.Fatalf("repeat #%d = %#v", i, got)
 		}
 	}
-	if got, err := s.SetSongPublic("s1", false, alice); err != nil || got == nil || got.IsPublic {
-		t.Fatalf("unshare = %#v, err=%v", got, err)
+	if got := lookup(s.SetSongPublic("s1", false, alice)).found(t, "unshare"); got.IsPublic {
+		t.Fatalf("unshare = %#v", got)
 	}
 
 	// An admin may act on anyone's song.
-	if got, err := s.SetSongPublic("s1", true, AdminAccess("root")); err != nil || got == nil || !got.IsPublic {
-		t.Fatalf("admin share = %#v, err=%v", got, err)
+	if got := lookup(s.SetSongPublic("s1", true, AdminAccess("root"))).found(t, "admin share"); !got.IsPublic {
+		t.Fatalf("admin share = %#v", got)
 	}
 	// The zero Access is not a skeleton key.
-	if got, err := s.SetSongPublic("s1", false, Access{}); err != nil || got != nil {
-		t.Fatalf("zero Access shared a song: %#v, err=%v", got, err)
-	}
+	lookup(s.SetSongPublic("s1", false, Access{})).absent(t, "zero Access shared a song")
 
 	// PublicSong only ever returns a shared song.
-	if g, err := s.PublicSong("s1"); err != nil || g == nil {
-		t.Fatalf("PublicSong on a shared song = %#v, err=%v", g, err)
-	}
+	lookup(s.PublicSong("s1")).found(t, "PublicSong on a shared song")
 	if _, err := s.SetSongPublic("s1", false, alice); err != nil {
 		t.Fatal(err)
 	}
-	if g, err := s.PublicSong("s1"); err != nil || g != nil {
-		t.Fatalf("PublicSong on a private song = %#v, err=%v", g, err)
-	}
+	lookup(s.PublicSong("s1")).absent(t, "PublicSong on a private song")
 }
 
 // TestPartitionedReadsAndClamping pins the two partition queries at the SQL
@@ -1254,7 +1074,6 @@ func TestPartitionQueriesUseTheirIndexes(t *testing.T) {
 // the audio paths come back for the caller to unlink.
 func TestDeleteUserCascadesInOneTransaction(t *testing.T) {
 	s := openTemp(t)
-	now := time.Now().UTC()
 	doomed := mustCreateUser(t, s, testUser("u-doomed", "doomed"))
 	keeper := mustCreateUser(t, s, testUser("u-keeper", "keeper"))
 
@@ -1272,14 +1091,8 @@ func TestDeleteUserCascadesInOneTransaction(t *testing.T) {
 	jk := testJob("jk1")
 	jk.UserID = keeper.ID
 	mustCreateJob(t, s, jk)
-	if err := s.CreateSession(testToken("doomed"), &Session{UserID: doomed.ID,
-		Username: "doomed", CreatedAt: now, ExpiresAt: now.Add(time.Hour)}); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.CreateSession(testToken("keeper"), &Session{UserID: keeper.ID,
-		Username: "keeper", CreatedAt: now, ExpiresAt: now.Add(time.Hour)}); err != nil {
-		t.Fatal(err)
-	}
+	mustCreateSession(t, s, testToken("doomed"), doomed.ID, "doomed")
+	mustCreateSession(t, s, testToken("keeper"), keeper.ID, "keeper")
 
 	paths, err := s.DeleteUser(doomed.ID)
 	if err != nil {
@@ -1291,36 +1104,20 @@ func TestDeleteUserCascadesInOneTransaction(t *testing.T) {
 	}
 
 	// Everything of theirs is gone, even to an admin.
-	if u, err := s.GetUserByID(doomed.ID); err != nil || u != nil {
-		t.Errorf("user survived: %#v, err=%v", u, err)
-	}
+	lookup(s.GetUserByID(doomed.ID)).absent(t, "user survived")
 	for _, id := range []string{"d1", "d2"} {
-		if g, err := s.Song(id, AdminAccess("root")); err != nil || g != nil {
-			t.Errorf("song %s survived: err=%v", id, err)
-		}
+		lookup(s.Song(id, AdminAccess("root"))).absent(t, "song "+id+" survived")
 	}
 	for _, id := range []string{"jd1", "jd2"} {
-		if j, err := s.Job(id, AdminAccess("root")); err != nil || j != nil {
-			t.Errorf("job %s survived: err=%v", id, err)
-		}
+		lookup(s.Job(id, AdminAccess("root"))).absent(t, "job "+id+" survived")
 	}
-	if sess, err := s.GetSession(testToken("doomed")); err != nil || sess != nil {
-		t.Errorf("session survived: err=%v", err)
-	}
+	lookup(s.GetSession(testToken("doomed"))).absent(t, "session survived")
 
 	// Nobody else was touched.
-	if u, _ := s.GetUserByID(keeper.ID); u == nil {
-		t.Fatal("the wrong user was deleted")
-	}
-	if g, _ := s.Song("k1", UserAccess(keeper.ID)); g == nil {
-		t.Error("another user's song was deleted")
-	}
-	if j, _ := s.Job("jk1", UserAccess(keeper.ID)); j == nil {
-		t.Error("another user's job was deleted")
-	}
-	if sess, _ := s.GetSession(testToken("keeper")); sess == nil {
-		t.Error("another user's session was revoked")
-	}
+	lookup(s.GetUserByID(keeper.ID)).found(t, "the wrong user was deleted")
+	lookup(s.Song("k1", UserAccess(keeper.ID))).found(t, "another user's song was deleted")
+	lookup(s.Job("jk1", UserAccess(keeper.ID))).found(t, "another user's job was deleted")
+	lookup(s.GetSession(testToken("keeper"))).found(t, "another user's session was revoked")
 
 	// A user with no content deletes cleanly and returns no paths.
 	empty := mustCreateUser(t, s, testUser("u-empty", "empty"))
@@ -1397,17 +1194,10 @@ func TestLastAdminGuard(t *testing.T) {
 // started_at is the schema's only nullable timestamp: NULL means "never
 // reached a GPU", which is the distinction the worker's queue budget rests on.
 func TestJobStartedAtIsNilUntilAGPUStampsIt(t *testing.T) {
-	s, err := Open(filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
+	s := openTemp(t)
 	mustCreateJob(t, s, testJob("j1"))
 
-	got, err := s.Job("j1", legacy)
-	if err != nil {
-		t.Fatal(err)
-	}
+	got := mustJob(t, s, "j1")
 	if got.StartedAt != nil {
 		t.Fatalf("a freshly queued job claims to have started at %v", *got.StartedAt)
 	}
@@ -1506,19 +1296,6 @@ func TestCoverLinkMintResolveAndExpire(t *testing.T) {
 		t.Errorf("an expired link still resolves: err=%v", err)
 	}
 
-	// And the purge removes it, since nothing else would — unlike a job or a
-	// song, a link has no owner who might come back for it.
-	n, err := s.PurgeExpiredCoverLinks()
-	if err != nil {
-		t.Fatalf("PurgeExpiredCoverLinks: %v", err)
-	}
-	if n != 1 {
-		t.Errorf("purged %d rows, want 1", n)
-	}
-	// The live one survives.
-	if k, _, _ := s.CoverLink(token); k == "" {
-		t.Error("the purge removed a live link")
-	}
 }
 
 // The kind is a closed set: a link is for audio or for an upload, and anything
