@@ -29,29 +29,56 @@ func main() {
 		fmt.Fprintln(os.Stderr, "probeclean: -user is required")
 		os.Exit(2)
 	}
-
-	st, err := store.Open(*db)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "probeclean: opening %s: %v\n", *db, err)
+	// run returns rather than exiting, so its deferred Close runs on every path.
+	if err := run(*db, *user, *apply); err != nil {
+		fmt.Fprintf(os.Stderr, "probeclean: %v\n", err)
 		os.Exit(1)
+	}
+}
+
+// run reports what the account holds and, with apply, deletes it.
+func run(db, user string, apply bool) error {
+	st, err := store.Open(db)
+	if err != nil {
+		return fmt.Errorf("opening %s: %w", db, err)
 	}
 	defer st.Close()
 
-	u, err := st.GetUserByUsername(*user)
+	u, err := st.GetUserByUsername(user)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "probeclean: looking up %q: %v\n", *user, err)
-		os.Exit(1)
+		return fmt.Errorf("looking up %q: %w", user, err)
 	}
 	if u == nil {
-		fmt.Printf("probeclean: no account named %q — nothing to do\n", *user)
-		return
+		fmt.Printf("probeclean: no account named %q — nothing to do\n", user)
+		return nil
 	}
+	if err := report(st, u); err != nil {
+		return err
+	}
+	if !apply {
+		fmt.Println("\nDRY RUN — nothing changed. Re-run with -apply to delete.")
+		return nil
+	}
+
+	paths, err := st.DeleteUser(u.ID)
+	if err != nil {
+		return fmt.Errorf("deleting: %w", err)
+	}
+	fmt.Printf("\ndeleted account; %d file(s) to unlink\n", len(paths))
+	if failed := unlink(paths); failed > 0 {
+		return fmt.Errorf("%d file(s) could not be removed", failed)
+	}
+	fmt.Println("done")
+	return nil
+}
+
+// report prints the account and what deleting it would take with it.
+func report(st *store.Store, u *store.User) error {
 	fmt.Printf("account : %s  id=%s  status=%s role=%s\n", u.Username, u.ID, u.Status, u.Role)
 
 	songs, err := st.Songs(500, 0, store.Access{Admin: true})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "probeclean: listing songs: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("listing songs: %w", err)
 	}
 	var owned []string
 	for _, s := range songs {
@@ -63,22 +90,15 @@ func main() {
 
 	uploads, err := st.CoverUploadsByUser(u.ID)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "probeclean: listing uploads: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("listing uploads: %w", err)
 	}
 	fmt.Printf("uploads : %d %v\n", len(uploads), uploads)
+	return nil
+}
 
-	if !*apply {
-		fmt.Println("\nDRY RUN — nothing changed. Re-run with -apply to delete.")
-		return
-	}
-
-	paths, err := st.DeleteUser(u.ID)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "probeclean: deleting: %v\n", err)
-		os.Exit(1)
-	}
-	fmt.Printf("\ndeleted account; %d file(s) to unlink\n", len(paths))
+// unlink removes each file, returning how many could not be removed. A file
+// already gone is not a failure: the row that named it is what mattered.
+func unlink(paths []string) int {
 	var failed int
 	for _, p := range paths {
 		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
@@ -88,9 +108,5 @@ func main() {
 		}
 		fmt.Printf("  removed %s\n", filepath.Base(p))
 	}
-	if failed > 0 {
-		fmt.Fprintf(os.Stderr, "probeclean: %d file(s) could not be removed\n", failed)
-		os.Exit(1)
-	}
-	fmt.Println("done")
+	return failed
 }
