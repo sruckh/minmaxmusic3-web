@@ -94,6 +94,23 @@ func (j *journey) redirectedTo(res *httptest.ResponseRecorder) string {
 	return loc
 }
 
+// journeyAs is a journey already holding a session minted outside the UI.
+func journeyAs(t *testing.T, h http.Handler, name, token string) *journey {
+	j := newJourney(t, h, name)
+	j.token = token
+	return j
+}
+
+// wantAll reports every string in wants that body does not contain.
+func wantAll(t *testing.T, where, body string, wants ...string) {
+	t.Helper()
+	for _, w := range wants {
+		if !strings.Contains(body, w) {
+			t.Errorf("%s is missing %q", where, w)
+		}
+	}
+}
+
 // TestAcceptanceFullUserLifecycle is the end-to-end arc. It exercises every
 // stage of the feature in one continuous story against the real handler stack,
 // with no store calls used to set up state that a user could perform through
@@ -110,15 +127,45 @@ func TestAcceptanceFullUserLifecycle(t *testing.T) {
 	})
 	useBcryptCost(t, bcrypt.MinCost)
 
-	const (
-		alicePass = "alice-fixture-password"
-		bobPass   = "bob-fixture-password"
-	)
-	alice := newJourney(t, h, "alice")
-	bob := newJourney(t, h, "bob")
-	admin := newJourney(t, h, "admin")
+	lc := &lifecycle{t: t, s: s, up: up,
+		alice: newJourney(t, h, "alice"),
+		bob:   newJourney(t, h, "bob"),
+		admin: newJourney(t, h, "admin"),
+	}
+	lc.anonymousIsShut()      // 1
+	lc.register()             // 2
+	lc.approvalGateHolds()    // 3
+	lc.adminApproves()        // 4
+	lc.aliceLogsIn()          // 5
+	lc.generate()             // 6
+	lc.bobCannotSeeIt()       // 7
+	lc.aliceShares()          // 8
+	lc.aliceUnshares()        // 9
+	lc.adminDisablesAlice()   // 10
+	lc.adminDeletesAlice()    // 11
+	lc.logoutEndsTheSession() // 12
+}
 
-	// ---- 1. Anonymous: the app is closed. ----
+const (
+	alicePass = "alice-fixture-password"
+	bobPass   = "bob-fixture-password"
+)
+
+// lifecycle is the state TestAcceptanceFullUserLifecycle carries from one
+// stage to the next. Stages run in order and each relies on the last, so they
+// are methods on one story rather than independent tests.
+type lifecycle struct {
+	t                  *testing.T
+	s                  *Server
+	up                 *stubUpstream
+	alice, bob, admin  *journey
+	aliceUser, bobUser *store.User
+	song               *store.Song
+}
+
+// ---- 1. Anonymous: the app is closed. ----
+func (lc *lifecycle) anonymousIsShut() {
+	t, alice := lc.t, lc.alice
 	for _, path := range []string{"/", "/history", "/history/personal", "/admin"} {
 		res := alice.get(path)
 		if !denied(res) {
@@ -130,8 +177,11 @@ func TestAcceptanceFullUserLifecycle(t *testing.T) {
 	if !strings.Contains(page, `action="/login"`) || !strings.Contains(page, `href="/register"`) {
 		t.Fatal("the login page does not offer a way in or a way to register")
 	}
+}
 
-	// ---- 2. Register. ----
+// ---- 2. Register. ----
+func (lc *lifecycle) register() {
+	t, alice := lc.t, lc.alice
 	res := alice.mustPost("/register", url.Values{
 		"username": {"alice"}, "password": {alicePass},
 		"confirm_password": {alicePass}}, http.StatusSeeOther)
@@ -141,13 +191,16 @@ func TestAcceptanceFullUserLifecycle(t *testing.T) {
 	if alice.token != "" {
 		t.Fatal("registration signed the new user straight in")
 	}
-	page = alice.mustGet("/login?notice="+noticeKeyRegistered, 200)
+	page := alice.mustGet("/login?notice="+noticeKeyRegistered, 200)
 	if !strings.Contains(page, noticeRegistered) {
 		t.Fatal("the registration notice is not shown")
 	}
+}
 
-	// ---- 3. The approval gate holds. ----
-	res = alice.post("/login", url.Values{"username": {"alice"}, "password": {alicePass}})
+// ---- 3. The approval gate holds. ----
+func (lc *lifecycle) approvalGateHolds() {
+	t, alice := lc.t, lc.alice
+	res := alice.post("/login", url.Values{"username": {"alice"}, "password": {alicePass}})
 	if res.Code != http.StatusForbidden {
 		t.Fatalf("pending login = %d, want 403", res.Code)
 	}
@@ -162,8 +215,11 @@ func TestAcceptanceFullUserLifecycle(t *testing.T) {
 	if res.Code != http.StatusUnauthorized || strings.Contains(res.Body.String(), noticePending) {
 		t.Fatal("a wrong password leaked the account's pending status")
 	}
+}
 
-	// ---- 4. The administrator approves. ----
+// ---- 4. The administrator approves. ----
+func (lc *lifecycle) adminApproves() {
+	t, admin := lc.t, lc.admin
 	admin.mustPost("/login", url.Values{
 		"username": {fxAdminUser}, "password": {fxAdminPass}}, http.StatusSeeOther)
 	if admin.token == "" {
@@ -180,7 +236,7 @@ func TestAcceptanceFullUserLifecycle(t *testing.T) {
 		t.Fatal("the pending badge does not show the waiting request")
 	}
 
-	aliceUser, err := s.st.GetUserByUsername("alice")
+	aliceUser, err := lc.s.st.GetUserByUsername("alice")
 	if err != nil || aliceUser == nil {
 		t.Fatalf("alice was not stored: %#v, err=%v", aliceUser, err)
 	}
@@ -188,9 +244,13 @@ func TestAcceptanceFullUserLifecycle(t *testing.T) {
 		t.Fatalf("alice's status = %q, want pending", aliceUser.Status)
 	}
 	admin.mustPost("/admin/users/"+aliceUser.ID+"/approve", nil, http.StatusSeeOther)
+	lc.aliceUser = aliceUser
+}
 
-	// ---- 5. Alice can now log in. ----
-	res = alice.mustPost("/login", url.Values{
+// ---- 5. Alice can now log in. ----
+func (lc *lifecycle) aliceLogsIn() {
+	t, alice := lc.t, lc.alice
+	res := alice.mustPost("/login", url.Values{
 		"username": {"alice"}, "password": {alicePass}}, http.StatusSeeOther)
 	if alice.token == "" {
 		t.Fatal("approved login issued no session")
@@ -205,22 +265,24 @@ func TestAcceptanceFullUserLifecycle(t *testing.T) {
 	if strings.Contains(home, `href="/admin"`) {
 		t.Error("an ordinary user was shown the Admin tab")
 	}
+}
 
-	// ---- 6. Generate a song, end to end through the worker. ----
-	res = alice.mustPost("/jobs", url.Values{
+// ---- 6. Generate a song, end to end through the worker. ----
+func (lc *lifecycle) generate() {
+	t, alice, s := lc.t, lc.alice, lc.s
+	alice.mustPost("/jobs", url.Values{
 		"input":          {"[Verse]\nla la la"},
 		"instructions":   {"Global Metadata: acoustic pop. Vocal Details: soft. Arrangement: guitar."},
 		"audio_duration": {"30"},
 		"seed":           {"7"},
 	}, 200)
-	_ = res
-	up.completeFirstRun(t)
+	lc.up.completeFirstRun(t)
 	waitUntil(t, 20*time.Second, func() bool {
-		songs, err := s.st.PersonalSongs(aliceUser.ID, 10, 0)
+		songs, err := s.st.PersonalSongs(lc.aliceUser.ID, 10, 0)
 		return err == nil && len(songs) == 1
 	}, "the song landed owned by alice")
 
-	songs, err := s.st.PersonalSongs(aliceUser.ID, 10, 0)
+	songs, err := s.st.PersonalSongs(lc.aliceUser.ID, 10, 0)
 	if err != nil || len(songs) != 1 {
 		t.Fatalf("alice's songs = %d, err=%v", len(songs), err)
 	}
@@ -238,18 +300,23 @@ func TestAcceptanceFullUserLifecycle(t *testing.T) {
 		t.Fatal("the library is not partitioned")
 	}
 	alice.mustGet("/audio/"+song.ID, 200)
+	lc.song = song
+}
 
-	// ---- 7. Bob registers, is approved, and cannot see it. ----
+// ---- 7. Bob registers, is approved, and cannot see it. ----
+func (lc *lifecycle) bobCannotSeeIt() {
+	t, bob, song := lc.t, lc.bob, lc.song
 	bob.mustPost("/register", url.Values{
 		"username": {"bob"}, "password": {bobPass},
 		"confirm_password": {bobPass}}, http.StatusSeeOther)
-	bobUser, err := s.st.GetUserByUsername("bob")
+	bobUser, err := lc.s.st.GetUserByUsername("bob")
 	if err != nil || bobUser == nil {
 		t.Fatalf("bob was not stored: %v", err)
 	}
-	admin.mustPost("/admin/users/"+bobUser.ID+"/approve", nil, http.StatusSeeOther)
+	lc.admin.mustPost("/admin/users/"+bobUser.ID+"/approve", nil, http.StatusSeeOther)
 	bob.mustPost("/login", url.Values{
 		"username": {"bob"}, "password": {bobPass}}, http.StatusSeeOther)
+	lc.bobUser = bobUser
 
 	bobLib := bob.mustGet("/history", 200)
 	if strings.Contains(bobLib, song.ID) {
@@ -264,12 +331,15 @@ func TestAcceptanceFullUserLifecycle(t *testing.T) {
 	if res := bob.req("DELETE", "/songs/"+song.ID, nil); res.Code == 200 {
 		t.Fatal("bob deleted alice's song")
 	}
+}
 
-	// ---- 8. Alice shares it; bob sees it in Community. ----
-	alice.mustPost("/songs/"+song.ID+"/toggle-public",
+// ---- 8. Alice shares it; bob sees it in Community. ----
+func (lc *lifecycle) aliceShares() {
+	t, bob, song := lc.t, lc.bob, lc.song
+	lc.alice.mustPost("/songs/"+song.ID+"/toggle-public",
 		url.Values{"public": {"1"}}, http.StatusSeeOther)
 
-	bobLib = bob.mustGet("/history", 200)
+	bobLib := bob.mustGet("/history", 200)
 	if !strings.Contains(bobLib, song.ID) {
 		t.Fatal("a shared song did not reach the community library")
 	}
@@ -283,9 +353,12 @@ func TestAcceptanceFullUserLifecycle(t *testing.T) {
 		url.Values{"public": {"0"}}); res.Code != http.StatusNotFound {
 		t.Fatalf("bob un-shared alice's song: %d", res.Code)
 	}
+}
 
-	// ---- 9. Alice un-shares; bob is refused on his very next request. ----
-	alice.mustPost("/songs/"+song.ID+"/toggle-public",
+// ---- 9. Alice un-shares; bob is refused on his very next request. ----
+func (lc *lifecycle) aliceUnshares() {
+	t, bob, song := lc.t, lc.bob, lc.song
+	lc.alice.mustPost("/songs/"+song.ID+"/toggle-public",
 		url.Values{"public": {"0"}}, http.StatusSeeOther)
 	if res := bob.get("/audio/" + song.ID); res.Code != http.StatusNotFound {
 		t.Fatalf("bob still streamed after un-publish: %d", res.Code)
@@ -293,22 +366,25 @@ func TestAcceptanceFullUserLifecycle(t *testing.T) {
 	if res := bob.get("/songs/" + song.ID); res.Code != http.StatusNotFound {
 		t.Fatalf("bob still read the detail page after un-publish: %d", res.Code)
 	}
-	bobLib = bob.mustGet("/history", 200)
+	bobLib := bob.mustGet("/history", 200)
 	if strings.Contains(bobLib, song.ID) {
 		t.Fatal("the un-shared song stayed in the community library")
 	}
+}
 
-	// ---- 10. The administrator disables alice; her session dies in flight. ----
+// ---- 10. The administrator disables alice; her session dies in flight. ----
+func (lc *lifecycle) adminDisablesAlice() {
+	t, alice := lc.t, lc.alice
 	if res := alice.get("/history"); res.Code != 200 {
 		t.Fatalf("alice was already locked out: %d", res.Code)
 	}
-	admin.mustPost("/admin/users/"+aliceUser.ID+"/disable", nil, http.StatusSeeOther)
+	lc.admin.mustPost("/admin/users/"+lc.aliceUser.ID+"/disable", nil, http.StatusSeeOther)
 
-	res = alice.get("/history")
+	res := alice.get("/history")
 	if !denied(res) {
 		t.Fatalf("a disabled user was still served: %d", res.Code)
 	}
-	if res := alice.get("/audio/" + song.ID); !denied(res) {
+	if res := alice.get("/audio/" + lc.song.ID); !denied(res) {
 		t.Fatalf("a disabled user still streamed audio: %d", res.Code)
 	}
 	// And she cannot log back in, with the reason given.
@@ -319,27 +395,33 @@ func TestAcceptanceFullUserLifecycle(t *testing.T) {
 	}
 
 	// Bob is unaffected throughout.
-	bob.mustGet("/history", 200)
+	lc.bob.mustGet("/history", 200)
+}
 
-	// ---- 11. The administrator deletes alice; her content goes with her. ----
-	admin.mustPost("/admin/users/"+aliceUser.ID+"/delete", nil, http.StatusSeeOther)
-	if u, err := s.st.GetUserByID(aliceUser.ID); err != nil || u != nil {
+// ---- 11. The administrator deletes alice; her content goes with her. ----
+func (lc *lifecycle) adminDeletesAlice() {
+	t, s := lc.t, lc.s
+	lc.admin.mustPost("/admin/users/"+lc.aliceUser.ID+"/delete", nil, http.StatusSeeOther)
+	if u, err := s.st.GetUserByID(lc.aliceUser.ID); err != nil || u != nil {
 		t.Fatalf("alice survived deletion: %#v, err=%v", u, err)
 	}
-	if g, err := s.st.Song(song.ID, store.AdminAccess("root")); err != nil || g != nil {
+	if g, err := s.st.Song(lc.song.ID, store.AdminAccess("root")); err != nil || g != nil {
 		t.Fatalf("alice's song survived her deletion: %#v, err=%v", g, err)
 	}
 	// Bob is still fine, and the dashboard no longer lists alice.
-	bob.mustGet("/history", 200)
-	board = admin.mustGet("/admin", 200)
+	lc.bob.mustGet("/history", 200)
+	board := lc.admin.mustGet("/admin", 200)
 	if strings.Contains(board, ">alice<") {
 		t.Error("a deleted user is still listed on the dashboard")
 	}
+}
 
-	// ---- 12. Logging out ends the session server-side. ----
+// ---- 12. Logging out ends the session server-side. ----
+func (lc *lifecycle) logoutEndsTheSession() {
+	t, bob := lc.t, lc.bob
 	bobToken := bob.token
 	bob.mustPost("/logout", nil, http.StatusSeeOther)
-	if sess, err := s.st.GetSession(bobToken); err != nil || sess != nil {
+	if sess, err := lc.s.st.GetSession(bobToken); err != nil || sess != nil {
 		t.Fatalf("bob's session survived logout: %#v, err=%v", sess, err)
 	}
 	if res := bob.get("/history"); !denied(res) {
@@ -362,9 +444,8 @@ func TestAcceptanceHostileContentRendersInert(t *testing.T) {
 	if len(hostileName) > maxUsernameLen {
 		hostileName = hostileName[:maxUsernameLen]
 	}
-	admin := newJourney(t, h, "admin")
 	_, adminTok := mkSession(t, s, "render-admin", store.StatusApproved, store.RoleAdmin)
-	admin.token = adminTok
+	admin := journeyAs(t, h, "admin", adminTok)
 
 	evil := &store.User{ID: newUserID(), Username: hostileName,
 		PasswordHash: "$2a$04$" + strings.Repeat("x", 53),
@@ -383,9 +464,9 @@ func TestAcceptanceHostileContentRendersInert(t *testing.T) {
 
 	pages := map[string]string{
 		"admin dashboard":   admin.mustGet("/admin", 200),
-		"community library": func() string { j := newJourney(t, h, "v"); j.token = adminTok; return j.mustGet("/history", 200) }(),
-		"song detail":       func() string { j := newJourney(t, h, "o"); j.token = ownerTok; return j.mustGet("/songs/"+g.ID, 200) }(),
-		"owner library":     func() string { j := newJourney(t, h, "o"); j.token = ownerTok; return j.mustGet("/history", 200) }(),
+		"community library": journeyAs(t, h, "v", adminTok).mustGet("/history", 200),
+		"song detail":       journeyAs(t, h, "o", ownerTok).mustGet("/songs/"+g.ID, 200),
+		"owner library":     journeyAs(t, h, "o", ownerTok).mustGet("/history", 200),
 	}
 	for where, body := range pages {
 		// The raw payload must never appear unescaped.
@@ -451,14 +532,8 @@ func TestAcceptanceEmptyAndErrorStates(t *testing.T) {
 	}
 
 	// No songs, no community songs.
-	lib := admin.mustGet("/history", 200)
-	for _, want := range []string{
-		"No songs in your library yet", "Nothing has been shared yet",
-	} {
-		if !strings.Contains(lib, want) {
-			t.Errorf("the library is missing the empty state %q", want)
-		}
-	}
+	wantAll(t, "the empty library", admin.mustGet("/history", 200),
+		"No songs in your library yet", "Nothing has been shared yet")
 
 	// A failed login says one thing, whoever you are.
 	anon := newJourney(t, h, "anon")
@@ -487,24 +562,29 @@ func TestAcceptanceEmptyAndErrorStates(t *testing.T) {
 	}
 
 	// A throttled login says so and offers Retry-After.
-	var throttled bool
+	res = hammerLogin(anon)
+	if res == nil {
+		t.Fatal("login was never throttled")
+	}
+	if res.Header().Get("Retry-After") == "" {
+		t.Error("the throttled response has no Retry-After")
+	}
+	if !strings.Contains(res.Body.String(), "Too many attempts") {
+		t.Error("the throttled response does not explain itself")
+	}
+}
+
+// hammerLogin fails logins past the limit and returns the first throttled
+// response, nil if none was.
+func hammerLogin(anon *journey) *httptest.ResponseRecorder {
 	for i := 0; i < loginLimitPerWindow+5; i++ {
 		res := anon.post("/login", url.Values{
 			"username": {"nobody"}, "password": {"nope"}})
 		if res.Code == http.StatusTooManyRequests {
-			throttled = true
-			if res.Header().Get("Retry-After") == "" {
-				t.Error("the throttled response has no Retry-After")
-			}
-			if !strings.Contains(res.Body.String(), "Too many attempts") {
-				t.Error("the throttled response does not explain itself")
-			}
-			break
+			return res
 		}
 	}
-	if !throttled {
-		t.Error("login was never throttled")
-	}
+	return nil
 }
 
 // TestAcceptanceAccessibilityBasics checks the affordances a keyboard or
@@ -518,10 +598,8 @@ func TestAcceptanceAccessibilityBasics(t *testing.T) {
 	mkSong(t, s, "a11y-song", owner.ID, false)
 
 	anon := newJourney(t, h, "anon")
-	admin := newJourney(t, h, "admin")
-	admin.token = adminTok
-	user := newJourney(t, h, "user")
-	user.token = ownerTok
+	admin := journeyAs(t, h, "admin", adminTok)
+	user := journeyAs(t, h, "user", ownerTok)
 
 	// Every form control is labelled and reachable.
 	for _, path := range []string{"/login", "/register"} {
@@ -541,32 +619,21 @@ func TestAcceptanceAccessibilityBasics(t *testing.T) {
 
 	// The login and register forms expose their headings, guidance, and password control state
 	// without coupling this test to the decorative rack-console classes.
-	login := anon.mustGet("/login", 200)
-	for _, want := range []string{
+	wantAll(t, "/login", anon.mustGet("/login", 200),
 		`id="login-title"`,
 		`aria-labelledby="login-title"`,
 		`aria-describedby="login-guidance"`,
 		`aria-controls="password"`,
 		`aria-pressed="false"`,
-	} {
-		if !strings.Contains(login, want) {
-			t.Errorf("/login is missing semantic hook %q", want)
-		}
-	}
-
-	register := anon.mustGet("/register", 200)
-	for _, want := range []string{
+	)
+	wantAll(t, "/register", anon.mustGet("/register", 200),
 		`id="register-title"`,
 		`aria-labelledby="register-title"`,
 		`aria-describedby="register-guidance"`,
 		`aria-controls="password"`,
 		`aria-controls="confirm_password"`,
 		`aria-pressed="false"`,
-	} {
-		if !strings.Contains(register, want) {
-			t.Errorf("/register is missing semantic hook %q", want)
-		}
-	}
+	)
 
 	// The badge reads as words, not a bare number.
 	board := admin.mustGet("/admin", 200)
@@ -581,11 +648,7 @@ func TestAcceptanceAccessibilityBasics(t *testing.T) {
 		t.Error("the action column has no accessible name")
 	}
 	// Buttons say what they do.
-	for _, label := range []string{"Approve User", "Disable User", "Delete User"} {
-		if !strings.Contains(board, label) {
-			t.Errorf("the dashboard is missing the %q button", label)
-		}
-	}
+	wantAll(t, "the dashboard", board, "Approve User", "Disable User", "Delete User")
 	// Destructive actions confirm first.
 	if strings.Count(board, "hx-confirm") < 2 {
 		t.Error("destructive admin actions do not confirm")
@@ -610,8 +673,7 @@ func TestAcceptanceThemeAndResponsiveHooksArePresent(t *testing.T) {
 	_, adminTok := mkSession(t, s, "theme-admin", store.StatusApproved, store.RoleAdmin)
 
 	anon := newJourney(t, h, "anon")
-	admin := newJourney(t, h, "admin")
-	admin.token = adminTok
+	admin := journeyAs(t, h, "admin", adminTok)
 
 	bodies := map[string]string{
 		"/login":    anon.mustGet("/login", 200),
@@ -646,8 +708,7 @@ func TestAcceptanceGenerateDraftSurvivesNavigation(t *testing.T) {
 	useBcryptCost(t, bcrypt.MinCost)
 	_, tok := mkSession(t, s, "drafter", store.StatusApproved, store.RoleUser)
 
-	j := newJourney(t, h, "drafter")
-	j.token = tok
+	j := journeyAs(t, h, "drafter", tok)
 	body := j.mustGet("/", 200)
 
 	// The draft itself lives in one shared module, because the song detail page
@@ -668,11 +729,8 @@ func TestAcceptanceGenerateDraftSurvivesNavigation(t *testing.T) {
 		}
 	}
 	// Restoring on load and saving on change are what make navigating away safe.
-	for _, hook := range []string{"this.restore()", "$watch", "mm3WriteDraft(d)"} {
-		if !strings.Contains(body, hook) {
-			t.Errorf("generate page is missing %q, so the draft will not survive navigation", hook)
-		}
-	}
+	wantAll(t, "generate page (so the draft will not survive navigation)", body,
+		"this.restore()", "$watch", "mm3WriteDraft(d)")
 	// Clearing is an explicit user action, never a side effect of navigating.
 	// Clear sits in the accordion header beside Assistant, whose own @click
 	// toggles the section — so .stop is load-bearing, not decoration.
@@ -701,9 +759,7 @@ func TestAcceptanceUserNamesTheirSong(t *testing.T) {
 	useBcryptCost(t, bcrypt.MinCost)
 	_, tok := mkSession(t, s, "namer", store.StatusApproved, store.RoleUser)
 
-	j := newJourney(t, h, "namer")
-	j.token = tok
-	body := j.mustGet("/", 200)
+	body := journeyAs(t, h, "namer", tok).mustGet("/", 200)
 
 	if !strings.Contains(body, `name="title"`) {
 		t.Error("generate form offers no title field")
