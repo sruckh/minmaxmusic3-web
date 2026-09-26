@@ -314,7 +314,6 @@ func (w *Worker) failAmbiguousSubmissions(ctx context.Context) {
 			w.log.Error("worker: failing ambiguous submission", "job", j.ID, "err", err)
 		}
 	}
-	_ = ctx // reserved for best-effort cancel when a durable id exists
 }
 
 func (w *Worker) failExpired(ctx context.Context) {
@@ -351,54 +350,67 @@ func (w *Worker) submitQueued(ctx context.Context) {
 		return
 	}
 	for _, j := range jobs {
-		if j.RunPodID != "" {
-			continue // idempotent: never resubmit
-		}
-		// Capacity never arrived. Fail here rather than in pollActive: this row
-		// has no runpod_id, so there is nothing remote to cancel.
-		if over, why := expired(j); over {
-			w.log.Warn("worker: queue budget exhausted", "job", j.ID,
-				"waited", time.Since(j.CreatedAt).Round(time.Second),
-				"attempts", j.Retries)
-			w.fail(ctx, j, why)
-			continue
-		}
-		// A refused submission waits out its backoff in `queued`.
-		if time.Since(j.UpdatedAt) < submitDelay(j.Retries) {
-			continue
-		}
-		// Claim locally BEFORE the remote call. A crash after this point
-		// leaves `submitting`, which restart recovery fails as ambiguous
-		// rather than resubmitting a potentially billable remote job.
-		if err := w.st.TransitionJob(j.ID, store.StateQueued, store.StateSubmitting, nil); err != nil {
-			continue
-		}
-		j.State = store.StateSubmitting
+		w.submitOne(ctx, j)
+	}
+}
 
-		rp := w.clientFor(j)
-		if rp == nil {
-			// Nothing remote exists yet, so there is nothing to cancel and the
-			// row holds no billable job. Failing it here is the whole fix.
-			w.fail(ctx, j, "config: no endpoint configured for engine "+j.Engine)
-			continue
-		}
-		id, err := rp.Submit(ctx, requestFor(j))
-		if err != nil {
-			w.classifySubmit(j, err)
-			continue
-		}
-		if err := w.st.TransitionJob(j.ID, store.StateSubmitting, store.StateSubmitted,
-			func(a map[string]any) { a["runpod_id"] = id; a["retries"] = 0 }); err != nil {
-			// The remote id exists but the normal CAS failed. Cancel it and
-			// durably record both the id and failure — never lose the id and
-			// never make the row eligible for resubmission.
-			rp.Cancel(ctx, id)
-			reason := "submit-cas: " + err.Error()
-			if oerr := w.st.OrphanSubmission(j.ID, id, reason); oerr != nil {
-				w.log.Error("worker: recording orphaned submission", "job", j.ID,
-					"runpod_id", id, "err", oerr)
-			}
-		}
+// submitOne claims one queued job and posts it, unless it has already gone
+// out, has run out of queue budget, or is still waiting out a refusal.
+func (w *Worker) submitOne(ctx context.Context, j *store.Job) {
+	if j.RunPodID != "" {
+		return // idempotent: never resubmit
+	}
+	// Capacity never arrived. Fail here rather than in pollActive: this row
+	// has no runpod_id, so there is nothing remote to cancel.
+	if over, why := expired(j); over {
+		w.log.Warn("worker: queue budget exhausted", "job", j.ID,
+			"waited", time.Since(j.CreatedAt).Round(time.Second),
+			"attempts", j.Retries)
+		w.fail(ctx, j, why)
+		return
+	}
+	// A refused submission waits out its backoff in `queued`.
+	if time.Since(j.UpdatedAt) < submitDelay(j.Retries) {
+		return
+	}
+	// Claim locally BEFORE the remote call. A crash after this point
+	// leaves `submitting`, which restart recovery fails as ambiguous
+	// rather than resubmitting a potentially billable remote job.
+	if err := w.st.TransitionJob(j.ID, store.StateQueued, store.StateSubmitting, nil); err != nil {
+		return
+	}
+	j.State = store.StateSubmitting
+
+	rp := w.clientFor(j)
+	if rp == nil {
+		// Nothing remote exists yet, so there is nothing to cancel and the
+		// row holds no billable job. Failing it here is the whole fix.
+		w.fail(ctx, j, "config: no endpoint configured for engine "+j.Engine)
+		return
+	}
+	w.post(ctx, j, rp)
+}
+
+// post sends a claimed job to RunPod and records the remote id it gets back.
+func (w *Worker) post(ctx context.Context, j *store.Job, rp *runpod.Client) {
+	id, err := rp.Submit(ctx, requestFor(j))
+	if err != nil {
+		w.classifySubmit(j, err)
+		return
+	}
+	err = w.st.TransitionJob(j.ID, store.StateSubmitting, store.StateSubmitted,
+		func(a map[string]any) { a["runpod_id"] = id; a["retries"] = 0 })
+	if err == nil {
+		return
+	}
+	// The remote id exists but the normal CAS failed. Cancel it and
+	// durably record both the id and failure — never lose the id and
+	// never make the row eligible for resubmission.
+	rp.Cancel(ctx, id)
+	reason := "submit-cas: " + err.Error()
+	if oerr := w.st.OrphanSubmission(j.ID, id, reason); oerr != nil {
+		w.log.Error("worker: recording orphaned submission", "job", j.ID,
+			"runpod_id", id, "err", oerr)
 	}
 }
 
@@ -458,10 +470,10 @@ func (w *Worker) applyStatus(ctx context.Context, j *store.Job, sr *runpod.Statu
 	case runpod.StatusInQueue:
 		// stay submitted; touch updated_at so the budget clock is honest
 		// and reset the retry counter — progress of any kind clears it.
-		_ = w.st.TransitionJob(j.ID, from, store.StateSubmitted,
+		w.transition(j, from, store.StateSubmitted,
 			func(a map[string]any) { a["retries"] = 0 })
 	case runpod.StatusInProgress:
-		_ = w.st.TransitionJob(j.ID, from, store.StateRunning,
+		w.transition(j, from, store.StateRunning,
 			func(a map[string]any) {
 				a["retries"] = 0
 				// Stamped once. The run budget measures from the first
@@ -471,27 +483,41 @@ func (w *Worker) applyStatus(ctx context.Context, j *store.Job, sr *runpod.Statu
 				}
 			})
 	case runpod.StatusCompleted:
-		out, err := runpod.OutputOf(sr)
-		if err != nil {
-			w.fail(ctx, j, "schema: "+err.Error())
-			return
-		}
-		// Store the result FIRST, then CAS to succeeded. finish() is
-		// idempotent (SongForJob check + unique index), so if the CAS
-		// fails the next poll re-runs it harmlessly; but a CAS-first order
-		// would orphan a "succeeded" job with no audio.
-		if err := w.finish(ctx, j, out); err != nil {
-			w.storeFailure(ctx, j, err)
-			return
-		}
-		_ = w.st.TransitionJob(j.ID, from, store.StateSucceeded,
-			func(a map[string]any) { a["retries"] = 0 })
+		w.complete(ctx, j, from, sr)
 	case runpod.StatusFailed:
 		w.fail(ctx, j, "worker: "+runpod.ErrorText(sr.Error))
 	case runpod.StatusCancelled:
-		_ = w.st.FailJob(j.ID, "cancelled")
+		w.recordFailure(j, "cancelled")
 	default:
 		w.fail(ctx, j, "schema: unknown status "+sr.Status)
+	}
+}
+
+// complete stores a finished job's song, then marks the job succeeded.
+func (w *Worker) complete(ctx context.Context, j *store.Job, from string, sr *runpod.StatusResponse) {
+	out, err := runpod.OutputOf(sr)
+	if err != nil {
+		w.fail(ctx, j, "schema: "+err.Error())
+		return
+	}
+	// Store the result FIRST, then CAS to succeeded. finish() is
+	// idempotent (SongForJob check + unique index), so if the CAS
+	// fails the next poll re-runs it harmlessly; but a CAS-first order
+	// would orphan a "succeeded" job with no audio.
+	if err := w.finish(ctx, j, out); err != nil {
+		w.storeFailure(ctx, j, err)
+		return
+	}
+	w.transition(j, from, store.StateSucceeded,
+		func(a map[string]any) { a["retries"] = 0 })
+}
+
+// transition applies a poll-driven state change. Losing the compare-and-set is
+// normal — another poll or a cancel got there first, and the next tick reads
+// the state that won — so only a real store error is worth reporting.
+func (w *Worker) transition(j *store.Job, from, to string, set func(map[string]any)) {
+	if err := w.st.TransitionJob(j.ID, from, to, set); err != nil && !errors.Is(err, store.ErrTransition) {
+		w.log.Error("worker: job transition", "job", j.ID, "from", from, "to", to, "err", err)
 	}
 }
 
@@ -569,37 +595,33 @@ func (w *Worker) storeFailure(ctx context.Context, j *store.Job, err error) {
 }
 
 func (w *Worker) fail(ctx context.Context, j *store.Job, reason string) {
+	w.recordFailure(j, reason)
+	w.log.Warn("worker: job failed", "job", j.ID, "reason", reason)
+}
+
+// recordFailure fails a job in the store. A job already terminal is not an
+// error: whatever ended it first is the outcome that stands.
+func (w *Worker) recordFailure(j *store.Job, reason string) {
 	if err := w.st.FailJob(j.ID, reason); err != nil && !errors.Is(err, store.ErrTransition) {
 		w.log.Error("worker: fail job", "job", j.ID, "err", err)
 	}
-	w.log.Warn("worker: job failed", "job", j.ID, "reason", reason)
 }
 
 // finish stores the audio locally and writes the songs row (stage 02 §A3).
 // Idempotent: one song per job, enforced by the unique index.
 func (w *Worker) finish(ctx context.Context, j *store.Job, out *runpod.Output) error {
-	if existing, _ := w.st.SongForJob(j.ID); existing != nil {
+	existing, err := w.st.SongForJob(j.ID)
+	if err != nil {
+		// Not fatal: the unique index still refuses a second song, so going
+		// ahead costs at most a transcode that CreateSong then rejects.
+		w.log.Warn("worker: checking for an existing song", "job", j.ID, "err", err)
+	}
+	if existing != nil {
 		return nil
 	}
-	var data []byte
-	switch out.Delivery {
-	case "s3":
-		b, err := w.fetch(ctx, out.AudioURL)
-		if err != nil {
-			return fmt.Errorf("fetching s3 audio: %w", err)
-		}
-		data = b
-	case "base64":
-		b, err := base64.StdEncoding.DecodeString(out.InlineB64())
-		if err != nil {
-			return fmt.Errorf("decoding base64 audio: %w", err)
-		}
-		data = b
-	default:
-		raw, _ := json.Marshal(out)
-		w.log.Warn("worker: unknown delivery — full output recorded",
-			"delivery", out.Delivery, "output", string(raw))
-		return fmt.Errorf("unknown delivery %q", out.Delivery)
+	data, err := w.audioBytes(ctx, out)
+	if err != nil {
+		return err
 	}
 	if err := os.MkdirAll(w.audioDir, 0o750); err != nil {
 		return err
@@ -608,24 +630,6 @@ func (w *Worker) finish(ctx context.Context, j *store.Job, out *runpod.Output) e
 	path := filepath.Join(w.audioDir, songID+".m4a")
 	if err := audio.EncodeAudioToM4A(ctx, data, path); err != nil {
 		return fmt.Errorf("transcoding audio to m4a: %w", err)
-	}
-	// YuE2 returns the score it planned, under a presigned URL that expires.
-	// It is fetched now, beside the audio, because it is what edit mode
-	// generates from later — a stored URL would be a dead link by the time
-	// anyone wanted to edit the song.
-	//
-	// A failed fetch is deliberately not fatal. The song exists and is
-	// playable; what is lost is the ability to edit it, which is worth a
-	// warning and not worth discarding a completed generation.
-	score := ""
-	if out.ScoreABCURL != "" {
-		b, err := w.fetch(ctx, out.ScoreABCURL)
-		if err != nil {
-			w.log.Warn("worker: score fetch failed; song stored without its score",
-				"job", j.ID, "err", err)
-		} else {
-			score = string(b)
-		}
 	}
 	// The song inherits the job's owner — otherwise every generated song would
 	// land on the legacy owner and be invisible to the user who asked for it.
@@ -637,10 +641,56 @@ func (w *Worker) finish(ctx context.Context, j *store.Job, out *runpod.Output) e
 		Duration: out.Duration, Seed: j.Seed, Engine: engineOf(j, out),
 		Delivery: out.Delivery, AudioPath: path, Title: titleOf(j),
 		Mode: modeOf(j, out), Cot: cotOf(j, out),
-		ScoreABC: score, SourceSongID: j.SourceSongID,
+		ScoreABC: w.scoreOf(ctx, j, out), SourceSongID: j.SourceSongID,
 		Truncated: out.Truncated,
 		CreatedAt: time.Now().UTC(),
 	})
+}
+
+// audioBytes is the finished audio, however the worker delivered it.
+func (w *Worker) audioBytes(ctx context.Context, out *runpod.Output) ([]byte, error) {
+	switch out.Delivery {
+	case "s3":
+		b, err := w.fetch(ctx, out.AudioURL)
+		if err != nil {
+			return nil, fmt.Errorf("fetching s3 audio: %w", err)
+		}
+		return b, nil
+	case "base64":
+		b, err := base64.StdEncoding.DecodeString(out.InlineB64())
+		if err != nil {
+			return nil, fmt.Errorf("decoding base64 audio: %w", err)
+		}
+		return b, nil
+	default:
+		raw, _ := json.Marshal(out)
+		w.log.Warn("worker: unknown delivery — full output recorded",
+			"delivery", out.Delivery, "output", string(raw))
+		return nil, fmt.Errorf("unknown delivery %q", out.Delivery)
+	}
+}
+
+// scoreOf fetches the ABC score YuE2 returns, "" when there is none.
+//
+// YuE2 returns the score it planned, under a presigned URL that expires.
+// It is fetched now, beside the audio, because it is what edit mode
+// generates from later — a stored URL would be a dead link by the time
+// anyone wanted to edit the song.
+//
+// A failed fetch is deliberately not fatal. The song exists and is
+// playable; what is lost is the ability to edit it, which is worth a
+// warning and not worth discarding a completed generation.
+func (w *Worker) scoreOf(ctx context.Context, j *store.Job, out *runpod.Output) string {
+	if out.ScoreABCURL == "" {
+		return ""
+	}
+	b, err := w.fetch(ctx, out.ScoreABCURL)
+	if err != nil {
+		w.log.Warn("worker: score fetch failed; song stored without its score",
+			"job", j.ID, "err", err)
+		return ""
+	}
+	return string(b)
 }
 
 // engineOf and modeOf record what produced a song, preferring the worker's own
