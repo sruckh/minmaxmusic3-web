@@ -27,54 +27,10 @@ import (
 // container, where the data volume and the secrets both are.
 func TestLiveCoverFetch(t *testing.T) {
 	endpoint, key := liveEnv(t)
-	dbPath := os.Getenv("MM3_DB_PATH")
-	if dbPath == "" {
-		dbPath = "/data/mm3.db"
-	}
-	if _, err := os.Stat(dbPath); err != nil {
-		t.Skipf("no database at %s — run this inside the app container", dbPath)
-	}
-
-	st, err := store.Open(dbPath)
-	if err != nil {
-		t.Fatalf("opening %s: %v", dbPath, err)
-	}
-	defer st.Close()
-
-	// Any song with audio on disk will do: the worker only needs bytes it can
-	// decode, and the point is the size, not the content.
-	admin := store.Access{Admin: true}
-	songs, err := st.Songs(50, 0, admin)
-	if err != nil {
-		t.Fatalf("listing songs: %v", err)
-	}
-	var song *store.Song
-	for _, s := range songs {
-		if s.AudioPath == "" {
-			continue
-		}
-		if fi, err := os.Stat(s.AudioPath); err == nil && fi.Size() > 1<<20 {
-			song = s
-			break
-		}
-	}
-	if song == nil {
-		t.Skip("no song with a multi-megabyte audio file to serve")
-	}
-	fi, _ := os.Stat(song.AudioPath)
-	t.Logf("serving %s (%d bytes)", song.ID, fi.Size())
-
-	// Mint the link exactly as the cover handler does.
-	token, err := st.CreateCoverLink(store.CoverLinkAudio, song.ID, 2*time.Hour)
-	if err != nil {
-		t.Fatalf("minting a cover link: %v", err)
-	}
-	public := strings.TrimRight(os.Getenv("MM3_PUBLIC_URL"), "/")
-	if public == "" {
-		t.Skip("MM3_PUBLIC_URL is unset, so no absolute link can be built")
-	}
-	sourceURL := public + "/signed/" + token
-	t.Logf("source: %s/signed/<token>", public)
+	st := liveStore(t)
+	song, size := largeSong(t, st)
+	t.Logf("serving %s (%d bytes)", song.ID, size)
+	sourceURL := mintSourceURL(t, st, song.ID)
 
 	// --- does the app serve it, at size? ---------------------------------
 	w := &Worker{log: testLogger(t), fetchBackoff: time.Second}
@@ -97,8 +53,8 @@ func TestLiveCoverFetch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the app did not serve its own signed link: %v", err)
 	}
-	if int64(len(body)) != fi.Size() {
-		t.Errorf("served %d bytes, file is %d", len(body), fi.Size())
+	if int64(len(body)) != size {
+		t.Errorf("served %d bytes, file is %d", len(body), size)
 	}
 	t.Logf("app served %d bytes over the public origin", len(body))
 
@@ -122,32 +78,19 @@ func TestLiveCoverFetch(t *testing.T) {
 	id := submitRetrying(t, jctx, c, req, "cover")
 	t.Logf("cover accepted: %s", id)
 
-	deadline := time.Now().Add(30 * time.Minute)
-	var sr *runpod.StatusResponse
-	for time.Now().Before(deadline) {
-		select {
-		case <-jctx.Done():
-			t.Fatalf("the job's own budget expired while it was %s", statusOf(sr))
-		case <-time.After(10 * time.Second):
-		}
-		sr, err = c.Status(jctx, id)
-		if err != nil {
-			continue
-		}
-		if sr.Status != runpod.StatusInQueue && sr.Status != runpod.StatusInProgress {
-			break
-		}
-	}
-	if sr == nil {
-		t.Fatal("no status ever came back")
-	}
-	text := runpod.ErrorText(sr.Error)
+	sr := pollTerminal(t, jctx, c, id, 10*time.Second, 30*time.Minute)
 	t.Logf("terminal status: %s", sr.Status)
+	coverVerdict(t, sr)
+}
+
+// coverVerdict reads a finished cover job. It is about which failure this is
+// rather than pass/fail: only a fetch failure means RunPod could not reach us.
+func coverVerdict(t *testing.T, sr *runpod.StatusResponse) {
+	t.Helper()
+	text := runpod.ErrorText(sr.Error)
 	if sr.Status != runpod.StatusCompleted {
 		t.Logf("error: %s", maskURLs(text))
 	}
-
-	// The verdict, and it is about which failure this is rather than pass/fail:
 	switch {
 	case sr.Status == runpod.StatusCompleted:
 		out, err := runpod.OutputOf(sr)
@@ -172,6 +115,89 @@ func TestLiveCoverFetch(t *testing.T) {
 		// expected and not a defect in the link.
 		t.Logf("the worker FETCHED the recording (this is not a fetch failure): %s", maskURLs(text))
 	}
+}
+
+// liveStore opens the app's own database, skipping outside the container.
+func liveStore(t *testing.T) *store.Store {
+	t.Helper()
+	dbPath := os.Getenv("MM3_DB_PATH")
+	if dbPath == "" {
+		dbPath = "/data/mm3.db"
+	}
+	if _, err := os.Stat(dbPath); err != nil {
+		t.Skipf("no database at %s — run this inside the app container", dbPath)
+	}
+	st, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("opening %s: %v", dbPath, err)
+	}
+	t.Cleanup(func() { st.Close() })
+	return st
+}
+
+// largeSong is any song with a multi-megabyte file on disk, and that file's
+// size. The worker only needs bytes it can decode, and the point is the size,
+// not the content.
+func largeSong(t *testing.T, st *store.Store) (*store.Song, int64) {
+	t.Helper()
+	songs, err := st.Songs(50, 0, store.Access{Admin: true})
+	if err != nil {
+		t.Fatalf("listing songs: %v", err)
+	}
+	for _, s := range songs {
+		if s.AudioPath == "" {
+			continue
+		}
+		if fi, err := os.Stat(s.AudioPath); err == nil && fi.Size() > 1<<20 {
+			return s, fi.Size()
+		}
+	}
+	t.Skip("no song with a multi-megabyte audio file to serve")
+	return nil, 0
+}
+
+// mintSourceURL mints a link to a song exactly as the cover handler does.
+func mintSourceURL(t *testing.T, st *store.Store, songID string) string {
+	t.Helper()
+	token, err := st.CreateCoverLink(store.CoverLinkAudio, songID, 2*time.Hour)
+	if err != nil {
+		t.Fatalf("minting a cover link: %v", err)
+	}
+	public := strings.TrimRight(os.Getenv("MM3_PUBLIC_URL"), "/")
+	if public == "" {
+		t.Skip("MM3_PUBLIC_URL is unset, so no absolute link can be built")
+	}
+	t.Logf("source: %s/signed/<token>", public)
+	return public + "/signed/" + token
+}
+
+// pollTerminal polls a job every interval until it leaves IN_QUEUE and
+// IN_PROGRESS, returning the last status. A poll error is retried: one
+// dropped request is not the job's verdict.
+func pollTerminal(t *testing.T, ctx context.Context, c *runpod.Client, id string, every, within time.Duration) *runpod.StatusResponse {
+	t.Helper()
+	deadline := time.Now().Add(within)
+	var sr *runpod.StatusResponse
+	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			t.Fatalf("the job's own budget expired while it was %s", statusOf(sr))
+		case <-time.After(every):
+		}
+		var err error
+		sr, err = c.Status(ctx, id)
+		if err != nil {
+			t.Logf("poll error (continuing): %v", err)
+			continue
+		}
+		if sr.Status != runpod.StatusInQueue && sr.Status != runpod.StatusInProgress {
+			break
+		}
+	}
+	if sr == nil {
+		t.Fatal("no status ever came back")
+	}
+	return sr
 }
 
 // statusOf names the state a probe was in when it gave up, so an abandoned

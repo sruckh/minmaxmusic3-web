@@ -108,36 +108,40 @@ func TestLiveYuE2Create(t *testing.T) {
 	}
 	t.Logf("accepted, runpod id %s", id)
 
-	// --- poll to a terminal state -----------------------------------------
-	var sr *runpod.StatusResponse
-	deadline := time.Now().Add(20 * time.Minute)
-	for time.Now().Before(deadline) {
-		time.Sleep(5 * time.Second)
-		sr, err = c.Status(ctx, id)
-		if err != nil {
-			t.Logf("poll error (continuing): %v", err)
-			continue
-		}
-		if sr.Status != runpod.StatusInQueue && sr.Status != runpod.StatusInProgress {
-			break
-		}
-	}
-	if sr == nil {
-		t.Fatal("no status ever came back")
-	}
-	t.Logf("terminal status: %s", sr.Status)
-	if sr.Status != runpod.StatusCompleted {
-		t.Fatalf("job did not complete: %s — %s", sr.Status, maskURLs(runpod.ErrorText(sr.Error)))
-	}
-
-	// --- the app's own decode path ----------------------------------------
-	out, err := runpod.OutputOf(sr)
-	if err != nil {
-		t.Fatalf("OutputOf rejected a real completion: %v", err)
-	}
+	// --- poll to a terminal state, and the app's own decode path ------------
+	out := waitForJob(t, ctx, c, id)
 	t.Logf("decoded: delivery=%s duration=%.1f sample_rate=%d seed=%d mode=%q cot=%q",
 		out.Delivery, out.Duration, out.SamplingRate, out.Seed, out.Mode, out.Cot)
+	checkCreateOutput(t, out)
 
+	// --- the rest of finish(): fetch, transcode, and read the score --------
+	w := &Worker{audioDir: t.TempDir(), log: testLogger(t)}
+	data, err := w.fetch(ctx, out.AudioURL)
+	if err != nil {
+		t.Fatalf("fetching the audio: %v", err)
+	}
+	t.Logf("fetched %d bytes of audio", len(data))
+
+	// A container sniff, not a filename: YuE2 sends FLAC where MiniMax sends
+	// WAV, and the encoder has to cope with both.
+	if len(data) > 4 {
+		t.Logf("container magic: %q", string(data[:4]))
+	}
+
+	transcodeProbe(t, ctx, data)
+
+	if score, ok := fetchScore(t, ctx, out.ScoreABCURL, "the score"); ok {
+		head := score[:min(len(score), 120)]
+		t.Logf("score fetched, %d bytes, begins: %q", len(score), head)
+		if !strings.HasPrefix(strings.TrimSpace(score), "X:") {
+			t.Errorf("score does not begin with the ABC header X: — got %q", head)
+		}
+	}
+}
+
+// checkCreateOutput holds a decoded create to what the app relies on.
+func checkCreateOutput(t *testing.T, out *runpod.Output) {
+	t.Helper()
 	if out.Delivery != runpod.DeliveryS3 {
 		t.Errorf("Delivery = %q, want %q", out.Delivery, runpod.DeliveryS3)
 	}
@@ -159,21 +163,11 @@ func TestLiveYuE2Create(t *testing.T) {
 	if out.ScoreABCURL == "" {
 		t.Error("no score_abc_url — an edit of this song would have nothing to work from")
 	}
+}
 
-	// --- the rest of finish(): fetch, transcode, and read the score --------
-	w := &Worker{audioDir: t.TempDir(), log: testLogger(t)}
-	data, err := w.fetch(ctx, out.AudioURL)
-	if err != nil {
-		t.Fatalf("fetching the audio: %v", err)
-	}
-	t.Logf("fetched %d bytes of audio", len(data))
-
-	// A container sniff, not a filename: YuE2 sends FLAC where MiniMax sends
-	// WAV, and the encoder has to cope with both.
-	if len(data) > 4 {
-		t.Logf("container magic: %q", string(data[:4]))
-	}
-
+// transcodeProbe runs fetched audio through the encoder finish() uses.
+func transcodeProbe(t *testing.T, ctx context.Context, data []byte) {
+	t.Helper()
 	outPath := filepath.Join(t.TempDir(), "song.m4a")
 	if err := audio.EncodeAudioToM4A(ctx, data, outPath); err != nil {
 		t.Fatalf("transcoding to m4a: %v", err)
@@ -186,22 +180,22 @@ func TestLiveYuE2Create(t *testing.T) {
 	if fi.Size() == 0 {
 		t.Error("transcoded file is empty")
 	}
+}
 
-	if out.ScoreABCURL != "" {
-		score, err := w.fetch(ctx, out.ScoreABCURL)
-		if err != nil {
-			t.Errorf("fetching the score: %v", err)
-		} else {
-			head := string(score)
-			if len(head) > 120 {
-				head = head[:120]
-			}
-			t.Logf("score fetched, %d bytes, begins: %q", len(score), head)
-			if !strings.HasPrefix(strings.TrimSpace(string(score)), "X:") {
-				t.Errorf("score does not begin with the ABC header X: — got %q", head)
-			}
-		}
+// fetchScore fetches a job's ABC score, reporting a failure as an error
+// rather than stopping: a song without its score is still a finished song.
+// ok is false when there is no score or it could not be fetched.
+func fetchScore(t *testing.T, ctx context.Context, url, what string) (string, bool) {
+	t.Helper()
+	if url == "" {
+		return "", false
 	}
+	b, err := (&Worker{log: testLogger(t)}).fetch(ctx, url)
+	if err != nil {
+		t.Errorf("fetching %s: %v", what, err)
+		return "", false
+	}
+	return string(b), true
 }
 
 // TestLiveYuE2Edit is the same proof for edit mode: create a song, take the
@@ -258,7 +252,7 @@ func TestLiveYuE2Edit(t *testing.T) {
 		ABC:     edited,
 		Seed:    ptr(int64(24680)),
 	}
-	req, _ := requestFor(job).(*runpod.Yue2Request)
+	req := requestFor(job)
 	pretty, _ := json.MarshalIndent(req, "", "  ")
 	t.Logf("editing with:\n%s", pretty)
 
@@ -266,20 +260,7 @@ func TestLiveYuE2Edit(t *testing.T) {
 	t.Logf("edit accepted: %s", id2)
 	out2 := waitForJob(t, ctx, c, id2)
 
-	if out2.AudioURL == "" {
-		t.Fatal("edit produced no audio")
-	}
-	if out2.Mode != "edit" {
-		t.Errorf("worker reports mode %q, want edit", out2.Mode)
-	}
-	if out2.Duration <= 0 {
-		t.Errorf("Duration = %v, want positive", out2.Duration)
-	}
-	// The worker keeps the supplied harmony by forcing cot=full for an edit.
-	// If it came back as anything else, the score was not the one re-rendered.
-	if out2.Cot != "full" {
-		t.Errorf("Cot = %q, want full — an edit keeps the supplied harmony", out2.Cot)
-	}
+	checkEditOutput(t, out2)
 
 	data, err := (&Worker{log: testLogger(t)}).fetch(ctx, out2.AudioURL)
 	if err != nil {
@@ -288,17 +269,31 @@ func TestLiveYuE2Edit(t *testing.T) {
 	t.Logf("edited audio: %d bytes, container %q, %.1fs", len(data), string(data[:4]), out2.Duration)
 
 	// --- step 3: did the tempo actually change? ---------------------------
-	if out2.ScoreABCURL != "" {
-		b, err := (&Worker{log: testLogger(t)}).fetch(ctx, out2.ScoreABCURL)
-		if err != nil {
-			t.Errorf("fetching the edited score: %v", err)
-		} else {
-			after := scoreMetaOfForProbe(string(b))
-			t.Logf("edit done:  %s | %s", after, headerOf(string(b)))
-			t.Logf("tempo asked for 132; the edited score reports %s", after)
-			// Not asserted: the model re-plans, so this is information rather
-			// than a contract. Worth seeing whether Q: is honoured at all.
-		}
+	if b, ok := fetchScore(t, ctx, out2.ScoreABCURL, "the edited score"); ok {
+		after := scoreMetaOfForProbe(b)
+		t.Logf("edit done:  %s | %s", after, headerOf(b))
+		t.Logf("tempo asked for 132; the edited score reports %s", after)
+		// Not asserted: the model re-plans, so this is information rather
+		// than a contract. Worth seeing whether Q: is honoured at all.
+	}
+}
+
+// checkEditOutput holds a decoded edit to what edit mode promises.
+func checkEditOutput(t *testing.T, out *runpod.Output) {
+	t.Helper()
+	if out.AudioURL == "" {
+		t.Fatal("edit produced no audio")
+	}
+	if out.Mode != "edit" {
+		t.Errorf("worker reports mode %q, want edit", out.Mode)
+	}
+	if out.Duration <= 0 {
+		t.Errorf("Duration = %v, want positive", out.Duration)
+	}
+	// The worker keeps the supplied harmony by forcing cot=full for an edit.
+	// If it came back as anything else, the score was not the one re-rendered.
+	if out.Cot != "full" {
+		t.Errorf("Cot = %q, want full — an edit keeps the supplied harmony", out.Cot)
 	}
 }
 
@@ -333,29 +328,12 @@ func submitRetrying(t *testing.T, ctx context.Context, c *runpod.Client, req any
 	}
 }
 
-// waitForJob polls to a terminal state and decodes the output.
+// waitForJob polls to a terminal state and decodes the output. The context
+// bounds the wait; the 35-minute deadline is a backstop.
 func waitForJob(t *testing.T, ctx context.Context, c *runpod.Client, id string) *runpod.Output {
 	t.Helper()
-	deadline := time.Now().Add(35 * time.Minute)
-	var sr *runpod.StatusResponse
-	var err error
-	for time.Now().Before(deadline) {
-		select {
-		case <-ctx.Done():
-			t.Fatalf("context expired waiting for %s", id)
-		case <-time.After(5 * time.Second):
-		}
-		sr, err = c.Status(ctx, id)
-		if err != nil {
-			continue
-		}
-		if sr.Status != runpod.StatusInQueue && sr.Status != runpod.StatusInProgress {
-			break
-		}
-	}
-	if sr == nil {
-		t.Fatalf("no status ever came back for %s", id)
-	}
+	sr := pollTerminal(t, ctx, c, id, 5*time.Second, 35*time.Minute)
+	t.Logf("terminal status: %s", sr.Status)
 	if sr.Status != runpod.StatusCompleted {
 		t.Fatalf("%s did not complete: %s — %s", id, sr.Status, maskURLs(runpod.ErrorText(sr.Error)))
 	}
@@ -387,18 +365,25 @@ func scoreMetaOfForProbe(abc string) string {
 	var key, meter, tempo string
 	for _, line := range strings.Split(abc, "\n") {
 		line = strings.TrimSpace(line)
+		_, qValue, hasValue := strings.Cut(line, "=")
 		switch {
-		case strings.HasPrefix(line, "K:") && key == "":
-			key = strings.TrimSpace(line[2:])
-		case strings.HasPrefix(line, "M:") && meter == "":
-			meter = strings.TrimSpace(line[2:])
-		case strings.HasPrefix(line, "Q:") && tempo == "":
-			if i := strings.IndexByte(line, '='); i >= 0 {
-				tempo = strings.TrimSpace(line[i+1:])
-			}
+		case strings.HasPrefix(line, "K:"):
+			setOnce(&key, line[2:])
+		case strings.HasPrefix(line, "M:"):
+			setOnce(&meter, line[2:])
+		case strings.HasPrefix(line, "Q:") && hasValue:
+			setOnce(&tempo, qValue)
 		}
 	}
 	return "K=" + key + " M=" + meter + " Q=" + tempo
+}
+
+// setOnce keeps the first header of each kind: a later one is a change inside
+// the tune, not what the song is in.
+func setOnce(dst *string, v string) {
+	if *dst == "" {
+		*dst = strings.TrimSpace(v)
+	}
 }
 
 // retempo rewrites the Q: header, leaving everything else byte-identical.
