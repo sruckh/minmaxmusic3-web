@@ -106,3 +106,16 @@ func TestEditWordsOf(t *testing.T) {
 		t.Error("no lyrics anywhere was accepted")
 	}
 }
+
+// A length that is not a finite number keeps the default. NaN in particular
+// passes every range check, and on YuE2 it reached the store and failed there.
+func TestFloatOrKeepsTheDefaultForNonFinite(t *testing.T) {
+	for v, want := range map[string]float64{
+		"45": 45, "": 30, "abc": 30, "1e400": 30,
+		"nan": 30, "NaN": 30, "inf": 30, "-Inf": 30,
+	} {
+		if got := floatOr(v, 30); got != want {
+			t.Errorf("floatOr(%q) = %v, want %v", v, got, want)
+		}
+	}
+}

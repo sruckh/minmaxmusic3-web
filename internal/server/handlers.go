@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"errors"
 	"fmt"
+	"math"
 	"math/rand/v2"
 	"net/http"
 	"slices"
@@ -269,9 +270,11 @@ func (s *Server) engineOf(r *http.Request) string {
 	return engine
 }
 
-// floatOr parses v, keeping def when it is blank or not a number.
+// floatOr parses v, keeping def when it is blank or not a finite number.
+// ParseFloat accepts "nan" and "inf" without error, and NaN compares false
+// against every bound, so it would slip past validate's range check.
 func floatOr(v string, def float64) float64 {
-	if d, err := strconv.ParseFloat(v, 64); err == nil {
+	if d, err := strconv.ParseFloat(v, 64); err == nil && !math.IsNaN(d) && !math.IsInf(d, 0) {
 		return d
 	}
 	return def
