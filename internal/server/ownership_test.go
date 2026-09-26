@@ -55,6 +55,32 @@ func setPublic(h http.Handler, id, token string, public string) *httptest.Respon
 	return postFormAs(h, "/songs/"+id+"/toggle-public", url.Values{"public": {public}}, token)
 }
 
+// storedSong reads a song back as its owner, failing the test if it is gone.
+func storedSong(t *testing.T, s *Server, id, ownerID string) *store.Song {
+	t.Helper()
+	g, err := s.st.Song(id, store.UserAccess(ownerID))
+	if err != nil || g == nil {
+		t.Fatalf("song %s is gone: %#v, err=%v", id, g, err)
+	}
+	return g
+}
+
+// nonOwnerWritesRefused tries every write on a song as someone who does not own
+// it. Each must answer 404 — the same as a song that is not there — and public
+// is the sharing target to attempt.
+func nonOwnerWritesRefused(t *testing.T, h http.Handler, id, token, public string) {
+	t.Helper()
+	for what, res := range map[string]*httptest.ResponseRecorder{
+		"delete": do(h, "DELETE", "/songs/"+id, cookieFor(token)),
+		"rename": postFormAs(h, "/songs/"+id+"/title", url.Values{"title": {"Bob Was Here"}}, token),
+		"share":  setPublic(h, id, token, public),
+	} {
+		if res.Code != http.StatusNotFound {
+			t.Errorf("non-owner %s of %s = %d, want 404", what, id, res.Code)
+		}
+	}
+}
+
 // TestSongIsolationBetweenUsers: one user's songs are invisible and immutable
 // to another across every surface.
 func TestSongIsolationBetweenUsers(t *testing.T) {
@@ -86,23 +112,10 @@ func TestSongIsolationBetweenUsers(t *testing.T) {
 	}
 
 	// And no write surface touches it.
-	if res := do(h, "DELETE", "/songs/alice-private", cookieFor(bobTok)); res.Code != http.StatusNotFound {
-		t.Errorf("bob DELETE = %d, want 404", res.Code)
-	}
-	if res := postFormAs(h, "/songs/alice-private/title",
-		url.Values{"title": {"Bob Was Here"}}, bobTok); res.Code != http.StatusNotFound {
-		t.Errorf("bob rename = %d, want 404", res.Code)
-	}
-	if res := setPublic(h, "alice-private", bobTok, "1"); res.Code != http.StatusNotFound {
-		t.Errorf("bob share = %d, want 404", res.Code)
-	}
+	nonOwnerWritesRefused(t, h, "alice-private", bobTok, "1")
 
 	// Nothing changed.
-	g, err := s.st.Song("alice-private", store.UserAccess(alice.ID))
-	if err != nil || g == nil {
-		t.Fatalf("alice's song is gone: %#v, err=%v", g, err)
-	}
-	if g.Title != "Song alice-private" || g.IsPublic {
+	if g := storedSong(t, s, "alice-private", alice.ID); g.Title != "Song alice-private" || g.IsPublic {
 		t.Fatalf("alice's song was modified: %#v", g)
 	}
 }
@@ -124,8 +137,7 @@ func TestToggleSharesAndUnshares(t *testing.T) {
 	if res := setPublic(h, "song-x", aliceTok, "1"); res.Code != http.StatusSeeOther {
 		t.Fatalf("share = %d, want 303; body=%s", res.Code, res.Body.String())
 	}
-	g, _ := s.st.Song("song-x", store.UserAccess(alice.ID))
-	if !g.IsPublic {
+	if !storedSong(t, s, "song-x", alice.ID).IsPublic {
 		t.Fatal("share did not set is_public")
 	}
 
@@ -212,22 +224,9 @@ func TestSharingGrantsReadingNeverWriting(t *testing.T) {
 
 	// But cannot write to it — including un-sharing it, which would be a
 	// denial-of-service on someone else's song.
-	if res := setPublic(h, "public-song", bobTok, "0"); res.Code != http.StatusNotFound {
-		t.Errorf("bob un-shared alice's song: %d", res.Code)
-	}
-	if res := do(h, "DELETE", "/songs/public-song", cookieFor(bobTok)); res.Code != http.StatusNotFound {
-		t.Errorf("bob deleted a public song: %d", res.Code)
-	}
-	if res := postFormAs(h, "/songs/public-song/title",
-		url.Values{"title": {"Bob"}}, bobTok); res.Code != http.StatusNotFound {
-		t.Errorf("bob renamed a public song: %d", res.Code)
-	}
+	nonOwnerWritesRefused(t, h, "public-song", bobTok, "0")
 
-	g, err := s.st.Song("public-song", store.UserAccess(alice.ID))
-	if err != nil || g == nil {
-		t.Fatal(err)
-	}
-	if !g.IsPublic || g.Title != "Song public-song" {
+	if g := storedSong(t, s, "public-song", alice.ID); !g.IsPublic || g.Title != "Song public-song" {
 		t.Fatalf("a non-owner changed a public song: %#v", g)
 	}
 
@@ -248,49 +247,33 @@ func TestToggleIsIdempotentAndExplicit(t *testing.T) {
 	alice, aliceTok := mkSession(t, s, "idem-alice", store.StatusApproved, store.RoleUser)
 	mkSong(t, s, "idem-song", alice.ID, false)
 
-	isPublic := func() bool {
-		g, err := s.st.Song("idem-song", store.UserAccess(alice.ID))
-		if err != nil || g == nil {
-			t.Fatalf("song lookup: %#v, err=%v", g, err)
-		}
-		return g.IsPublic
-	}
+	isPublic := func() bool { return storedSong(t, s, "idem-song", alice.ID).IsPublic }
 
 	// Two clients both sharing leaves it shared — not shared then un-shared,
-	// which is what a blind flip would produce.
-	for i := 0; i < 3; i++ {
-		if res := setPublic(h, "idem-song", aliceTok, "1"); res.Code != http.StatusSeeOther {
-			t.Fatalf("share #%d = %d", i, res.Code)
+	// which is what a blind flip would produce. Then the same for un-sharing.
+	for _, target := range []string{"1", "1", "1", "0", "0", "0"} {
+		if res := setPublic(h, "idem-song", aliceTok, target); res.Code != http.StatusSeeOther {
+			t.Fatalf("public=%s = %d", target, res.Code)
 		}
-		if !isPublic() {
-			t.Fatalf("after share #%d the song is private", i)
-		}
-	}
-	for i := 0; i < 3; i++ {
-		if res := setPublic(h, "idem-song", aliceTok, "0"); res.Code != http.StatusSeeOther {
-			t.Fatalf("unshare #%d = %d", i, res.Code)
-		}
-		if isPublic() {
-			t.Fatalf("after unshare #%d the song is public", i)
+		if isPublic() != (target == "1") {
+			t.Fatalf("after public=%s the song is public=%v", target, isPublic())
 		}
 	}
 
-	// The target is required, not inferred.
-	for _, bad := range []string{"", "maybe", "2", "null"} {
-		res := postFormAs(h, "/songs/idem-song/toggle-public",
-			url.Values{"public": {bad}}, aliceTok)
+	// The target is required, not inferred — a missing field included.
+	for _, form := range []url.Values{
+		{"public": {""}}, {"public": {"maybe"}}, {"public": {"2"}}, {"public": {"null"}}, {},
+	} {
+		res := postFormAs(h, "/songs/idem-song/toggle-public", form, aliceTok)
 		if res.Code != http.StatusBadRequest {
-			t.Errorf("public=%q = %d, want 400", bad, res.Code)
+			t.Errorf("form %q = %d, want 400", form.Encode(), res.Code)
 		}
-	}
-	if res := postFormAs(h, "/songs/idem-song/toggle-public", url.Values{}, aliceTok); res.Code != http.StatusBadRequest {
-		t.Errorf("missing target = %d, want 400", res.Code)
 	}
 	if isPublic() {
 		t.Fatal("a rejected request still changed the song")
 	}
 
-	// Accepted spellings.
+	// Accepted spellings, each reset to private before the next.
 	for _, ok := range []string{"1", "true", "on", "yes"} {
 		if res := setPublic(h, "idem-song", aliceTok, ok); res.Code != http.StatusSeeOther {
 			t.Errorf("public=%q = %d", ok, res.Code)
@@ -321,11 +304,7 @@ func TestToggleConcurrentWritesConverge(t *testing.T) {
 			t.Errorf("concurrent share = %d", code)
 		}
 	}
-	g, err := s.st.Song("race-song", store.UserAccess(alice.ID))
-	if err != nil || g == nil {
-		t.Fatal(err)
-	}
-	if !g.IsPublic {
+	if !storedSong(t, s, "race-song", alice.ID).IsPublic {
 		t.Fatal("16 concurrent 'share' requests left the song private")
 	}
 }
@@ -340,8 +319,7 @@ func TestAdminCanToggleAnySong(t *testing.T) {
 	if res := setPublic(h, "adm-song", adminTok, "1"); res.Code != http.StatusSeeOther {
 		t.Fatalf("admin share = %d", res.Code)
 	}
-	g, _ := s.st.Song("adm-song", store.UserAccess(alice.ID))
-	if !g.IsPublic {
+	if !storedSong(t, s, "adm-song", alice.ID).IsPublic {
 		t.Fatal("admin share did not take effect")
 	}
 	if res := do(h, "GET", "/audio/adm-song", cookieFor(adminTok)); res.Code != 200 {
@@ -359,8 +337,7 @@ func TestToggleRequiresASession(t *testing.T) {
 	if !denied(res) {
 		t.Fatalf("anonymous toggle = %d, want a refusal", res.Code)
 	}
-	g, _ := s.st.Song("anon-song", store.UserAccess(alice.ID))
-	if g.IsPublic {
+	if storedSong(t, s, "anon-song", alice.ID).IsPublic {
 		t.Fatal("an anonymous request shared a song")
 	}
 }
@@ -424,8 +401,7 @@ func TestCrossOriginWritesAreRefused(t *testing.T) {
 		if res.Code != http.StatusForbidden {
 			t.Errorf("%s = %d, want 403", c.name, res.Code)
 		}
-		g, _ := s.st.Song("csrf-song", store.UserAccess(alice.ID))
-		if g.IsPublic {
+		if storedSong(t, s, "csrf-song", alice.ID).IsPublic {
 			t.Fatalf("%s changed the song", c.name)
 		}
 	}
