@@ -15,13 +15,39 @@ func libraryBodies(t *testing.T, h http.Handler, token string) map[string]string
 	t.Helper()
 	out := map[string]string{}
 	for _, path := range []string{"/history", "/history/personal", "/history/public"} {
-		res := do(h, "GET", path, cookieFor(token))
-		if res.Code != http.StatusOK {
-			t.Fatalf("GET %s = %d", path, res.Code)
-		}
-		out[path] = res.Body.String()
+		out[path] = getAs(t, h, path, token)
 	}
 	return out
+}
+
+// getAs fetches path as the token's user, failing unless it answers 200. A
+// check for what a page must not contain means nothing on an error page.
+func getAs(t *testing.T, h http.Handler, path, token string) string {
+	t.Helper()
+	res := do(h, "GET", path, cookieFor(token))
+	if res.Code != http.StatusOK {
+		t.Fatalf("GET %s = %d", path, res.Code)
+	}
+	return res.Body.String()
+}
+
+// wantNone reports every string in secrets that body contains.
+func wantNone(t *testing.T, where, body string, secrets ...string) {
+	t.Helper()
+	for _, secret := range secrets {
+		if strings.Contains(body, secret) {
+			t.Errorf("%s exposed %q", where, secret)
+		}
+	}
+}
+
+// pagedPaths is every history URL that takes a page number, at page v.
+func pagedPaths(v string) []string {
+	return []string{
+		"/history/personal?page=" + v,
+		"/history/public?page=" + v,
+		"/history?mine=" + v + "&public=" + v,
+	}
 }
 
 // TestPersonalSongsNeverLeak is the point of this stage: nothing of user A's
@@ -40,68 +66,55 @@ func TestPersonalSongsNeverLeak(t *testing.T) {
 
 	// Page 1 of every surface, for bob.
 	for path, body := range libraryBodies(t, h, bobTok) {
-		if strings.Contains(body, "alice-") {
-			t.Errorf("%s leaked one of alice's songs to bob", path)
-		}
-		if strings.Contains(body, alice.ID) {
-			t.Errorf("%s leaked alice's user id", path)
-		}
+		wantNone(t, path, body, "alice-", alice.ID)
 	}
 
 	// ...and every page bob can reach, including past the end of his own list
 	// and deep into the range where alice's songs live.
 	for _, page := range []string{"1", "2", "3", "4", "5", "99", "10000"} {
-		for _, path := range []string{
-			"/history/personal?page=" + page,
-			"/history/public?page=" + page,
-			"/history?mine=" + page + "&public=" + page,
-		} {
-			res := do(h, "GET", path, cookieFor(bobTok))
-			if res.Code != http.StatusOK {
-				t.Fatalf("GET %s = %d", path, res.Code)
-			}
-			if strings.Contains(res.Body.String(), "alice-") {
-				t.Errorf("GET %s leaked alice's songs to bob", path)
-			}
+		for _, path := range pagedPaths(page) {
+			wantNone(t, "GET "+path, getAs(t, h, path, bobTok), "alice-")
 		}
 	}
 
 	// Bob's own song is present, so the absence above is isolation and not a
 	// broken query.
-	body := do(h, "GET", "/history/personal", cookieFor(bobTok)).Body.String()
-	if !strings.Contains(body, bobSong.ID) {
+	if !strings.Contains(getAs(t, h, "/history/personal", bobTok), bobSong.ID) {
 		t.Fatal("bob cannot see his own song")
 	}
 
 	// Alice sees all of hers and none of bob's.
-	aliceBody := do(h, "GET", "/history/personal", cookieFor(aliceTok)).Body.String()
-	if strings.Contains(aliceBody, "bob-only") {
-		t.Error("alice's library contains bob's song")
-	}
+	aliceBody := getAs(t, h, "/history/personal", aliceTok)
+	wantNone(t, "alice's library", aliceBody, "bob-only")
 	if !strings.Contains(aliceBody, "alice-44") {
 		t.Error("alice's newest song is missing from page 1")
 	}
 
-	// Sharing is the only thing that changes this.
-	if _, err := s.st.SetSongPublic("alice-00", true, store.UserAccess(alice.ID)); err != nil {
+	sharingExposesOnlyThatSong(t, h, s, alice.ID, bobTok, aliceSongs)
+}
+
+// sharingExposesOnlyThatSong shares alice-00, checks it alone reaches bob's
+// community library, then un-shares it and checks it is gone again.
+func sharingExposesOnlyThatSong(t *testing.T, h http.Handler, s *Server, aliceID, bobTok string, songs int) {
+	t.Helper()
+	if _, err := s.st.SetSongPublic("alice-00", true, store.UserAccess(aliceID)); err != nil {
 		t.Fatal(err)
 	}
-	pub := do(h, "GET", "/history/public", cookieFor(bobTok)).Body.String()
+	pub := getAs(t, h, "/history/public", bobTok)
 	if !strings.Contains(pub, "alice-00") {
 		t.Error("a shared song did not reach the community library")
 	}
-	for i := 1; i < aliceSongs; i++ {
-		if strings.Contains(pub, fmt.Sprintf("alice-%02d", i)) {
-			t.Errorf("sharing one song exposed alice-%02d as well", i)
-		}
+	others := make([]string, 0, songs-1)
+	for i := 1; i < songs; i++ {
+		others = append(others, fmt.Sprintf("alice-%02d", i))
 	}
+	wantNone(t, "the community library after sharing alice-00", pub, others...)
+
 	// And un-sharing removes it again.
-	if _, err := s.st.SetSongPublic("alice-00", false, store.UserAccess(alice.ID)); err != nil {
+	if _, err := s.st.SetSongPublic("alice-00", false, store.UserAccess(aliceID)); err != nil {
 		t.Fatal(err)
 	}
-	if after := do(h, "GET", "/history/public", cookieFor(bobTok)).Body.String(); strings.Contains(after, "alice-00") {
-		t.Error("an un-shared song stayed in the community library")
-	}
+	wantNone(t, "the community library after un-sharing", getAs(t, h, "/history/public", bobTok), "alice-00")
 }
 
 // mkUserFor returns the user id behind a session token.
@@ -179,14 +192,8 @@ func TestPagingParametersAreClamped(t *testing.T) {
 		"../../etc/passwd", "NaN", "+1", "1.5", "-9223372036854775808",
 	}
 	for _, raw := range hostile {
-		v := url.QueryEscape(raw)
-		for _, path := range []string{
-			"/history/personal?page=" + v,
-			"/history/public?page=" + v,
-			"/history?mine=" + v + "&public=" + v,
-		} {
-			res := do(h, "GET", path, cookieFor(token))
-			if res.Code != http.StatusOK {
+		for _, path := range pagedPaths(url.QueryEscape(raw)) {
+			if res := do(h, "GET", path, cookieFor(token)); res.Code != http.StatusOK {
 				t.Errorf("GET %s = %d, want 200", path, res.Code)
 			}
 		}
@@ -198,12 +205,11 @@ func TestPagingParametersAreClamped(t *testing.T) {
 	}
 
 	// A page never returns more than pageSize rows.
-	body := do(h, "GET", "/history/personal?page=1", cookieFor(token)).Body.String()
-	if n := strings.Count(body, "hx-delete"); n != pageSize {
+	if n := strings.Count(getAs(t, h, "/history/personal?page=1", token), "hx-delete"); n != pageSize {
 		t.Fatalf("page 1 rendered %d rows, want %d", n, pageSize)
 	}
 	// Page 2 holds the remainder and offers no "Older" link.
-	body2 := do(h, "GET", "/history/personal?page=2", cookieFor(token)).Body.String()
+	body2 := getAs(t, h, "/history/personal?page=2", token)
 	if n := strings.Count(body2, "hx-delete"); n != 5 {
 		t.Fatalf("page 2 rendered %d rows, want 5", n)
 	}
@@ -211,9 +217,7 @@ func TestPagingParametersAreClamped(t *testing.T) {
 		t.Error("a phantom Older link appeared on the last page")
 	}
 	// Paging past the end is empty, not an error.
-	if res := do(h, "GET", "/history/personal?page=500", cookieFor(token)); res.Code != http.StatusOK {
-		t.Fatalf("deep page = %d", res.Code)
-	}
+	getAs(t, h, "/history/personal?page=500", token)
 }
 
 // TestHistoryFragmentsRequireASession: the fragments are real routes and carry
@@ -274,20 +278,11 @@ func TestEmptyStatesRender(t *testing.T) {
 	h, _, s := newTestEnvWith(t, nil)
 	_, token := mkSession(t, s, "empty-user", store.StatusApproved, store.RoleUser)
 
-	full := do(h, "GET", "/history", cookieFor(token))
-	if full.Code != http.StatusOK {
-		t.Fatalf("GET /history = %d", full.Code)
-	}
-	body := full.Body.String()
-	for _, want := range []string{
+	body := getAs(t, h, "/history", token)
+	wantAll(t, "empty history", body,
 		"No songs in your library yet",
 		"Nothing has been shared yet",
-		"My Songs", "Community Songs",
-	} {
-		if !strings.Contains(body, want) {
-			t.Errorf("empty history missing %q", want)
-		}
-	}
+		"My Songs", "Community Songs")
 	// No paging controls on an empty section.
 	if strings.Contains(body, "page=2") {
 		t.Error("an empty section offered a next page")
@@ -298,19 +293,13 @@ func TestEmptyStatesRender(t *testing.T) {
 		{"/history/personal", "No songs in your library yet"},
 		{"/history/public", "Nothing has been shared yet"},
 	} {
-		res := do(h, "GET", c.path, cookieFor(token))
-		if res.Code != http.StatusOK {
-			t.Fatalf("GET %s = %d", c.path, res.Code)
-		}
-		if !strings.Contains(res.Body.String(), c.want) {
-			t.Errorf("GET %s missing %q", c.path, c.want)
-		}
+		wantAll(t, "GET "+c.path, getAs(t, h, c.path, token), c.want)
 	}
 
 	// A user with songs but nothing shared still gets the community message.
 	u := mkUserFor(t, s, token)
 	mkSong(t, s, "private-only", u, false)
-	body = do(h, "GET", "/history", cookieFor(token)).Body.String()
+	body = getAs(t, h, "/history", token)
 	if !strings.Contains(body, "Nothing has been shared yet") {
 		t.Error("community empty state missing when only private songs exist")
 	}
@@ -349,8 +338,7 @@ func TestOwnSharedSongIsControllableFromTheCommunityList(t *testing.T) {
 	if res := setPublic(h, "alice-shared", bobTok, "0"); res.Code != http.StatusNotFound {
 		t.Errorf("bob un-shared alice's song: %d", res.Code)
 	}
-	g, _ := s.st.Song("alice-shared", store.UserAccess(alice.ID))
-	if !g.IsPublic {
+	if !storedSong(t, s, "alice-shared", alice.ID).IsPublic {
 		t.Fatal("bob's request changed alice's song")
 	}
 }
