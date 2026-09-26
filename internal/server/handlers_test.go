@@ -1,8 +1,12 @@
 package server
 
 import (
+	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+
+	"github.com/sruckh/minmaxmusic3-web/internal/store"
 )
 
 // Text sharing a section tag's line is dropped by the model, so the form
@@ -55,5 +59,50 @@ func TestAnswerDelete(t *testing.T) {
 		if rec.Code != c.code || rec.Header().Get(c.header) != c.want {
 			t.Errorf("%s: %d %s=%q, want %d %q", c.name, rec.Code, c.header, rec.Header().Get(c.header), c.code, c.want)
 		}
+	}
+}
+
+// Each rule answers with its own message, in the order the form shows them.
+func TestValidateMessages(t *testing.T) {
+	ok := jobForm{Lyrics: "la", Caption: "pop", Duration: 30}
+	for _, c := range []struct {
+		name string
+		edit func(*jobForm)
+		want string
+	}{
+		{"valid", func(*jobForm) {}, ""},
+		{"no lyrics", func(f *jobForm) { f.Lyrics = "" }, "Add some lyrics"},
+		{"yue2 instrumental", func(f *jobForm) { f.Engine, f.Lyrics, f.Instrumental = store.EngineYue2, "", true }, ""},
+		{"instrumental with words", func(f *jobForm) { f.Instrumental = true }, "Instrumental is ticked"},
+		{"tag shares a line", func(f *jobForm) { f.Lyrics = "[Verse] la" }, "Every section tag"},
+		{"no caption", func(f *jobForm) { f.Caption = "" }, "Add a style caption"},
+		{"too short", func(f *jobForm) { f.Duration = 5 }, "Pick a length"},
+		{"yue2 ignores length", func(f *jobForm) { f.Engine, f.Duration = store.EngineYue2, 5 }, ""},
+		{"long title", func(f *jobForm) { f.Title = strings.Repeat("é", maxTitle+1) }, "That title is too long"},
+		{"long caption", func(f *jobForm) { f.Caption = strings.Repeat("x", 20001) }, "That caption is too long"},
+	} {
+		f := ok
+		c.edit(&f)
+		if got := validate(f); !strings.HasPrefix(got, c.want) || (c.want == "") != (got == "") {
+			t.Errorf("%s: validate = %q, want prefix %q", c.name, got, c.want)
+		}
+	}
+}
+
+// A blank edit field falls back to the song's own; only a gap in both refuses.
+func TestEditWordsOf(t *testing.T) {
+	src := &store.Song{Caption: "rock", Lyrics: "la"}
+	req := func(q string) *http.Request { return httptest.NewRequest("POST", "/?"+q, nil) }
+	if st, ly, msg := editWordsOf(req(""), src); st != "rock" || ly != "la" || msg != "" {
+		t.Errorf("fallback = %q %q %q", st, ly, msg)
+	}
+	if st, ly, _ := editWordsOf(req("instructions=jazz&input=oh"), src); st != "jazz" || ly != "oh" {
+		t.Errorf("form wins = %q %q", st, ly)
+	}
+	if _, _, msg := editWordsOf(req(""), &store.Song{Lyrics: "la"}); msg == "" {
+		t.Error("no style anywhere was accepted")
+	}
+	if _, _, msg := editWordsOf(req(""), &store.Song{Caption: "rock"}); msg == "" {
+		t.Error("no lyrics anywhere was accepted")
 	}
 }

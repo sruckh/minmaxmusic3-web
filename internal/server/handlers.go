@@ -1,6 +1,7 @@
 package server
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"math/rand/v2"
@@ -62,11 +63,7 @@ func (s *Server) handleAssistant(w http.ResponseWriter, r *http.Request) {
 	// expected, so an unrecognised value falls back to the original engine
 	// rather than erroring: a stale page or an edited form should still get a
 	// usable draft, and MiniMax is what every client meant before YuE2 existed.
-	engine := strings.TrimSpace(r.FormValue("engine"))
-	if _, ok := s.rps[engine]; !ok {
-		engine = store.EngineMiniMax
-	}
-	draft, err := s.llm.Draft(r.Context(), idea, engine)
+	draft, err := s.llm.Draft(r.Context(), idea, s.engineOf(r))
 	if err != nil {
 		s.log.Warn("assistant", "err", err)
 		s.assistantError(w, err)
@@ -153,26 +150,33 @@ func (m ScoreMeta) BPM() int {
 func scoreMetaOf(abc string) ScoreMeta {
 	var m ScoreMeta
 	for _, line := range strings.Split(abc, "\n") {
+		// Comment ("%") and voice ("V:") lines need no skipping: once trimmed,
+		// neither can start with a header this reads.
 		line = strings.TrimSpace(line)
-		if line == "" || line[0] == '%' || strings.HasPrefix(line, "V:") {
-			continue
-		}
-		// The first of each wins. The header comes before the music, so a later
-		// "K:", "M:" or "Q:" is a change inside the tune rather than what the
-		// song is in — the same rule the worker's live probe applies.
 		switch {
-		case strings.HasPrefix(line, "K:") && m.Key == "":
-			m.Key = strings.TrimSpace(line[2:])
-		case strings.HasPrefix(line, "M:") && m.Meter == "":
-			m.Meter = strings.TrimSpace(line[2:])
-		case strings.HasPrefix(line, "Q:") && strings.Contains(line, "=") && m.Tempo == "":
+		case strings.HasPrefix(line, "K:"):
+			firstHeader(&m.Key, line[2:])
+		case strings.HasPrefix(line, "M:"):
+			firstHeader(&m.Meter, line[2:])
+		case strings.HasPrefix(line, "Q:"):
 			// Q:1/4=145 — the beat note and the value, of which only the value
 			// is worth showing.
-			_, v, _ := strings.Cut(line, "=")
-			m.Tempo = strings.TrimSpace(v)
+			if _, v, ok := strings.Cut(line, "="); ok {
+				firstHeader(&m.Tempo, v)
+			}
 		}
 	}
 	return m
+}
+
+// firstHeader sets a header field unless an earlier line already did. The
+// header comes before the music, so a later "K:", "M:" or "Q:" is a change
+// inside the tune rather than what the song is in — the same rule the worker's
+// live probe applies.
+func firstHeader(dst *string, v string) {
+	if *dst == "" {
+		*dst = strings.TrimSpace(v)
+	}
 }
 
 // maxTitle bounds a song title. Naming is optional, so this is only here to
@@ -227,29 +231,10 @@ func (s *Server) jobFormOf(r *http.Request) jobForm {
 	f.Caption = strings.TrimSpace(r.FormValue("instructions"))
 	f.Title = strings.TrimSpace(r.FormValue("title"))
 	f.Idea = strings.TrimSpace(r.FormValue("idea"))
-	if len(f.Idea) > maxIdea {
-		f.Idea = f.Idea[:maxIdea]
-	}
-	f.Duration = 30
-	if v := r.FormValue("audio_duration"); v != "" {
-		if d, err := strconv.ParseFloat(v, 64); err == nil {
-			f.Duration = d
-		}
-	}
-	if v := strings.TrimSpace(r.FormValue("seed")); v != "" {
-		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
-			f.Seed = &n
-		}
-	}
-	// Any engine this deployment does not actually hold clients for is treated
-	// as the original: the engine selector is rendered from the configured set,
-	// so an unknown value means a stale page or an edited form, and refusing
-	// the whole submission over it would be a worse answer than running it on
-	// the engine that has always been there.
-	f.Engine = strings.TrimSpace(r.FormValue("engine"))
-	if _, ok := s.rps[f.Engine]; !ok {
-		f.Engine = store.EngineMiniMax
-	}
+	f.Idea = f.Idea[:min(len(f.Idea), maxIdea)]
+	f.Duration = floatOr(r.FormValue("audio_duration"), 30)
+	f.Seed = seedOf(r)
+	f.Engine = s.engineOf(r)
 	// Only YuE2 plans symbolically. Any other value is normalised away rather
 	// than rejected: the parameter has a working default, and the engine that
 	// ignores it is the one that would receive it.
@@ -263,6 +248,37 @@ func (s *Server) jobFormOf(r *http.Request) jobForm {
 	// is the false case and needs no parsing.
 	f.Instrumental = f.Engine == store.EngineYue2 && r.FormValue("instrumental") != ""
 	return f
+}
+
+// engineOf is the form's engine, or the original one when this deployment does
+// not hold clients for it. The engine selector is rendered from the configured
+// set, so an unknown value means a stale page or an edited form, and refusing
+// the request over it would be a worse answer than running it on the engine
+// that has always been there — MiniMax is what every client meant before YuE2
+// existed.
+func (s *Server) engineOf(r *http.Request) string {
+	engine := strings.TrimSpace(r.FormValue("engine"))
+	if _, ok := s.rps[engine]; !ok {
+		return store.EngineMiniMax
+	}
+	return engine
+}
+
+// floatOr parses v, keeping def when it is blank or not a number.
+func floatOr(v string, def float64) float64 {
+	if d, err := strconv.ParseFloat(v, 64); err == nil {
+		return d
+	}
+	return def
+}
+
+// seedOf is the form's seed, nil when it is blank or not an integer.
+func seedOf(r *http.Request) *int64 {
+	n, err := strconv.ParseInt(strings.TrimSpace(r.FormValue("seed")), 10, 64)
+	if err != nil {
+		return nil
+	}
+	return &n
 }
 
 // maxTempo bounds the tempo control. The worker's own validator accepts any
@@ -366,27 +382,9 @@ func (s *Server) handleEditSong(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Everything the form left blank falls back to what the song already has, so
-	// an edit that only changes the tempo does not silently blank the words.
-	style := strings.TrimSpace(r.FormValue("instructions"))
-	if style == "" {
-		style = src.Caption
-	}
-	lyrics := strings.TrimSpace(r.FormValue("input"))
-	if lyrics == "" {
-		lyrics = src.Lyrics
-	}
-	if style == "" {
-		s.renderJobError(w, http.StatusBadRequest,
-			"Add a style describing the arrangement you want.")
-		return
-	}
-	// The worker requires words for an edit; only a cover may omit them. So an
-	// empty lyric block here is a mistake rather than an instrumental request,
-	// and it is caught before a job is queued for it.
-	if lyrics == "" {
-		s.renderJobError(w, http.StatusBadRequest,
-			"An edit needs lyrics — untick Instrumental, or write some.")
+	style, lyrics, msg := editWordsOf(r, src)
+	if msg != "" {
+		s.renderJobError(w, http.StatusBadRequest, msg)
 		return
 	}
 
@@ -440,6 +438,24 @@ func (s *Server) sourceSong(w http.ResponseWriter, r *http.Request) *store.Song 
 	return src
 }
 
+// editWordsOf is the edit's style and lyrics, or a message for the user.
+// Everything the form left blank falls back to what the song already has, so
+// an edit that only changes the tempo does not silently blank the words.
+func editWordsOf(r *http.Request, src *store.Song) (style, lyrics, msg string) {
+	style = cmp.Or(strings.TrimSpace(r.FormValue("instructions")), src.Caption)
+	lyrics = cmp.Or(strings.TrimSpace(r.FormValue("input")), src.Lyrics)
+	if style == "" {
+		return "", "", "Add a style describing the arrangement you want."
+	}
+	// The worker requires words for an edit; only a cover may omit them. So an
+	// empty lyric block here is a mistake rather than an instrumental request,
+	// and it is caught before a job is queued for it.
+	if lyrics == "" {
+		return "", "", "An edit needs lyrics — untick Instrumental, or write some."
+	}
+	return style, lyrics, ""
+}
+
 // editScoreOf is the stored score with the form's tempo applied, or a message
 // for the user. A blank tempo leaves the score as it is.
 func editScoreOf(r *http.Request, abc string) (string, string) {
@@ -484,11 +500,35 @@ func rewriteTempo(abc string, bpm int) (string, bool) {
 // parameter at all, and permits an empty lyrics block to mean instrumental.
 // Applying either engine's rules to the other would reject valid input.
 func validate(f jobForm) string {
-	yue2 := f.Engine == store.EngineYue2
+	if msg := lyricsProblem(f); msg != "" {
+		return msg
+	}
+	if f.Caption == "" {
+		return "Add a style caption describing the music."
+	}
+	// Checked only for the engine that has the parameter: YuE2 derives length
+	// from the lyrics and the score it plans, so a duration bound would be a
+	// rule about a number YuE2 never receives.
+	if f.Engine != store.EngineYue2 && (f.Duration < 10 || f.Duration > 300) {
+		return "Pick a length between 10 and 300 seconds."
+	}
+	// A title is optional — left blank, the song is filed under a name taken
+	// from the caption, the way every song was before this field existed.
+	if len([]rune(f.Title)) > maxTitle {
+		return "That title is too long — keep it under 120 characters."
+	}
+	if len(f.Caption) > 20000 { // ~5,000-token advisory, hard stop far above
+		return "That caption is too long for the model — trim it."
+	}
+	return ""
+}
+
+// lyricsProblem is validate's rules for the lyric block, "" when it passes.
+func lyricsProblem(f jobForm) string {
 	// Lyrics are required unless the request is for an instrumental — and only
 	// YuE2 can be asked for one. MiniMax has no instrumental path at all, so a
 	// blank lyric box there is always a mistake rather than a choice.
-	if f.Lyrics == "" && !(yue2 && f.Instrumental) {
+	if f.Lyrics == "" && !(f.Engine == store.EngineYue2 && f.Instrumental) {
 		return "Add some lyrics first — or ask the assistant to draft them."
 	}
 	// Instrumental and lyrics are mutually exclusive: the worker refuses the
@@ -500,23 +540,6 @@ func validate(f jobForm) string {
 	}
 	if badTagLine(f.Lyrics) {
 		return "Every section tag like [Verse] needs its own line — the model drops text sharing a tag's line."
-	}
-	if f.Caption == "" {
-		return "Add a style caption describing the music."
-	}
-	// Checked only for the engine that has the parameter: YuE2 derives length
-	// from the lyrics and the score it plans, so a duration bound would be a
-	// rule about a number YuE2 never receives.
-	if !yue2 && (f.Duration < 10 || f.Duration > 300) {
-		return "Pick a length between 10 and 300 seconds."
-	}
-	// A title is optional — left blank, the song is filed under a name taken
-	// from the caption, the way every song was before this field existed.
-	if len([]rune(f.Title)) > maxTitle {
-		return "That title is too long — keep it under 120 characters."
-	}
-	if len(f.Caption) > 20000 { // ~5,000-token advisory, hard stop far above
-		return "That caption is too long for the model — trim it."
 	}
 	return ""
 }
@@ -547,10 +570,14 @@ func (s *Server) handleJobFragment(w http.ResponseWriter, r *http.Request) {
 	}
 	if j.State == store.StateSucceeded || j.State == store.StateFailed ||
 		j.State == store.StateCancelled {
-		// fetch the song for the player
+		// fetch the song for the player; without it the fragment still shows
+		// the job as done, just with no player
 		var g *store.Song
 		if j.State == store.StateSucceeded {
-			g, _ = s.songForJob(j.ID)
+			var err error
+			if g, err = s.songForJob(j.ID); err != nil {
+				s.log.Warn("song for job", "job", j.ID, "err", err)
+			}
 		}
 		s.renderJobDone(w, j, g)
 		return
