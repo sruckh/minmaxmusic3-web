@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -66,6 +67,11 @@ type Draft struct {
 type Profile struct {
 	System string // verbatim system prompt
 	Parse  func(string) (*Draft, error)
+	// StyleSystem and ParseStyle are the engine's style editor: a second
+	// prompt that rewrites only the style, checked against the engine's own
+	// style shape. Empty leaves that engine without a style editor.
+	StyleSystem string
+	ParseStyle  func(string) (string, error)
 }
 
 type Client struct {
@@ -141,15 +147,90 @@ func (c *Client) Draft(ctx context.Context, idea, engine string) (*Draft, error)
 	if idea == "" {
 		return nil, errors.New("llm: empty idea")
 	}
-	if len(idea) > maxUserLen {
-		idea = idea[:maxUserLen]
+	content, err := c.complete(ctx, prof.System, clip(idea, maxUserLen))
+	if err != nil {
+		return nil, err
 	}
+	return prof.Parse(content)
+}
 
+// StyleRequest is what the style editor is asked: the style as it stands, the
+// change the user wants, and the song's lyrics for context. Only Change is
+// required. An empty Style asks for a new style from the change alone.
+type StyleRequest struct {
+	Style  string
+	Change string
+	Lyrics string
+}
+
+// Per-field caps for the style editor. Lyrics are context only, so they are
+// the field cut first, but a full song's words fit.
+const (
+	maxStyleLen  = 3000
+	maxChangeLen = 1000
+)
+
+// RewriteStyle asks the engine's style editor for a replacement style. It
+// writes the style and nothing else: the lyrics travel as context, and the
+// reply is checked against the engine's style shape before it is returned.
+func (c *Client) RewriteStyle(ctx context.Context, engine string, req StyleRequest) (string, error) {
+	if c.BaseURL == "" || c.APIKey == "" || c.Model == "" {
+		return "", ErrNoConfig
+	}
+	p, ok := c.Profiles[engine]
+	if !ok || p.StyleSystem == "" || p.ParseStyle == nil {
+		return "", ErrNoConfig
+	}
+	change := strings.TrimSpace(req.Change)
+	if change == "" {
+		return "", errors.New("llm: empty style change")
+	}
+	content, err := c.complete(ctx, p.StyleSystem, styleMessage(req.Style, change, req.Lyrics))
+	if err != nil {
+		return "", err
+	}
+	return p.ParseStyle(content)
+}
+
+// styleMessage lays the request out under plain labels, so the editor can
+// tell the style it is editing from the change it is asked for, and both from
+// the lyrics it must not touch.
+func styleMessage(style, change, lyrics string) string {
+	var b strings.Builder
+	b.WriteString("Existing style:\n")
+	if style = strings.TrimSpace(style); style != "" {
+		b.WriteString(clip(style, maxStyleLen))
+	} else {
+		b.WriteString("(none: write a complete style from the requested change)")
+	}
+	b.WriteString("\n\nRequested change:\n")
+	b.WriteString(clip(change, maxChangeLen))
+	if lyrics = strings.TrimSpace(lyrics); lyrics != "" {
+		b.WriteString("\n\nLyrics (context only; do not rewrite or quote them):\n")
+		b.WriteString(clip(lyrics, maxUserLen))
+	}
+	return b.String()
+}
+
+// clip bounds a field by bytes without splitting a UTF-8 character.
+func clip(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
+}
+
+// complete sends one system/user exchange and returns the reply text. One
+// retry on network error only (stage 02 §B).
+func (c *Client) complete(ctx context.Context, system, user string) (string, error) {
 	reqPayload := chatRequest{
 		Model: c.Model,
 		Messages: []message{
-			{Role: "system", Content: prof.System},
-			{Role: "user", Content: idea},
+			{Role: "system", Content: system},
+			{Role: "user", Content: user},
 		},
 		MaxTokens:           maxTokens,
 		MaxCompletionTokens: maxTokens,
@@ -183,7 +264,7 @@ func (c *Client) Draft(ctx context.Context, idea, engine string) (*Draft, error)
 	var content string
 	for attempt := 0; attempt < 2; attempt++ {
 		if ctx.Err() != nil {
-			return nil, ErrTimeout
+			return "", ErrTimeout
 		}
 
 		cctx, cancel := context.WithTimeout(ctx, callTimeout)
@@ -191,7 +272,7 @@ func (c *Client) Draft(ctx context.Context, idea, engine string) (*Draft, error)
 			chatURL(c.BaseURL), strings.NewReader(string(body)))
 		if err != nil {
 			cancel()
-			return nil, err
+			return "", err
 		}
 		req.Header.Set("Authorization", "Bearer "+c.APIKey)
 		req.Header.Set("Content-Type", "application/json")
@@ -204,35 +285,35 @@ func (c *Client) Draft(ctx context.Context, idea, engine string) (*Draft, error)
 		if err != nil {
 			cancel()
 			if errors.Is(cctx.Err(), context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
-				return nil, ErrTimeout
+				return "", ErrTimeout
 			}
 			if errors.Is(ctx.Err(), context.Canceled) {
-				return nil, ErrTimeout
+				return "", ErrTimeout
 			}
 			if attempt == 0 && ctx.Err() == nil {
 				continue // one network retry
 			}
-			return nil, ErrUnavailable
+			return "", ErrUnavailable
 		}
 		cr, decodeErr := decodeChatResponse(resp)
 		resp.Body.Close()
 		cancel()
 		if resp.StatusCode >= 400 {
-			return nil, fmt.Errorf("%w: HTTP %d", ErrUnavailable, resp.StatusCode)
+			return "", fmt.Errorf("%w: HTTP %d", ErrUnavailable, resp.StatusCode)
 		}
 		if decodeErr != nil {
-			return nil, ErrUnparseable
+			return "", ErrUnparseable
 		}
 		if cr.Error != nil {
-			return nil, fmt.Errorf("%w: %s", ErrUnavailable, cr.Error.Message)
+			return "", fmt.Errorf("%w: %s", ErrUnavailable, cr.Error.Message)
 		}
 		if len(cr.Choices) == 0 {
-			return nil, ErrUnparseable
+			return "", ErrUnparseable
 		}
 		content = cr.Choices[0].Message.Content
 		break
 	}
-	return prof.Parse(content)
+	return content, nil
 }
 
 // chatURL appends the OpenAI chat path to the configured base URL. If the
@@ -550,4 +631,66 @@ func stripFences(text string) string {
 		b.WriteByte('\n')
 	}
 	return b.String()
+}
+
+// --- style editor replies ------------------------------------------------------
+//
+// The style editors return only a style, in the shape the engine's form takes:
+// one line for YuE2, a three-heading caption for MiniMax. Each prompt forbids
+// labels, fences and commentary; these checks tolerate the ones models add
+// anyway, and refuse a reply that is not a style at all rather than dropping it
+// into the user's box.
+
+// styleLabel is a "STYLE:" label the YuE2 prompt forbids and models write.
+var styleLabel = regexp.MustCompile(`(?i)^\s*style\s*:\s*`)
+
+// ParseYue2Style reads the YuE2 style editor's reply: one line. The first
+// non-empty line is the style. Anything after it is commentary the prompt
+// forbade, and it is dropped rather than folded into the style.
+func ParseYue2Style(content string) (string, error) {
+	for _, line := range strings.Split(stripFences(stripThinking(content)), "\n") {
+		line = strings.TrimSpace(styleLabel.ReplaceAllString(line, ""))
+		line = strings.TrimSpace(strings.Trim(line, "\"'`“”"))
+		if line != "" {
+			return line, nil
+		}
+	}
+	return "", ErrUnparseable
+}
+
+// miniMaxHeadings are the caption's three sections, in the order the prompt
+// requires.
+var miniMaxHeadings = []string{"Global Metadata", "Vocal Details", "Arrangement"}
+
+// ParseMiniMaxStyle reads the MiniMax style editor's reply: the three-heading
+// caption. The headings must all be present, each on its own line and in
+// order. A reply without them is not a caption the form can use. Anything
+// before the first heading is an introduction the prompt forbade, and is cut.
+func ParseMiniMaxStyle(content string) (string, error) {
+	lines := strings.Split(stripFences(stripThinking(content)), "\n")
+	first, next := -1, 0
+	for i, line := range lines {
+		if next < len(miniMaxHeadings) && isHeading(line, miniMaxHeadings[next]) {
+			if next == 0 {
+				first = i
+			}
+			next++
+		}
+	}
+	if next < len(miniMaxHeadings) {
+		return "", ErrUnparseable
+	}
+	return strings.TrimSpace(strings.Join(lines[first:], "\n")), nil
+}
+
+// isHeading accepts a caption heading however it is marked up: "### Global
+// Metadata", "**Global Metadata**" or "Global Metadata:", with or without
+// text after the colon.
+func isHeading(line, name string) bool {
+	line = strings.TrimSpace(strings.TrimLeft(strings.TrimSpace(line), "#*_ "))
+	if !strings.HasPrefix(strings.ToLower(line), strings.ToLower(name)) {
+		return false
+	}
+	rest := strings.TrimLeft(line[len(name):], "*_ ")
+	return rest == "" || strings.HasPrefix(rest, ":")
 }

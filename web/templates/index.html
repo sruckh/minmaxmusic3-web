@@ -154,6 +154,7 @@
             <span class="field-label" x-text="engine === 'yue2' ? 'Style' : 'Style Caption'">Style Caption</span>
             <textarea class="input input-caption" id="instructions" name="instructions" rows="6" x-model="caption"
               :placeholder="stylePlaceholder"></textarea>
+            {{template "style-assist.html" (dict "Target" "instructions" "Lyrics" "input" "Engine" "")}}
             <p class="help" x-show="engine === 'yue2'" x-cloak>
               One line: language, genre, mood, vocal character, instruments, tempo.
               Production details belong here, never in the lyrics.

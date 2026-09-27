@@ -94,6 +94,10 @@
                  style, so an untouched form is refused rather than guessed at. -->
             <textarea class="input input-caption" id="cover-instructions" name="instructions" rows="3"
               placeholder="Jazz-funk, Rhodes piano, brushed drums"></textarea>
+            <!-- Rewrites from scratch when the box is empty, since a cover's style
+                 starts blank. The cover's own lyrics box, if filled, is the
+                 context; otherwise the editor works from the style alone. -->
+            {{template "style-assist.html" (dict "Target" "cover-instructions" "Lyrics" "cover-input" "Engine" "yue2")}}
           </div>
 
           <div class="field-group">
@@ -189,6 +193,7 @@
           <div class="field-group">
             <label class="field-label" for="edit-instructions">Style</label>
             <textarea class="input input-caption" id="edit-instructions" name="instructions" rows="3">{{.Song.Caption}}</textarea>
+            {{template "style-assist.html" (dict "Target" "edit-instructions" "Lyrics" "edit-input" "Engine" "yue2")}}
           </div>
           <div class="field-group">
             <label class="field-label" for="edit-input">Lyrics</label>

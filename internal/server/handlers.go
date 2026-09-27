@@ -29,6 +29,7 @@ func (s *Server) registerFeatures(rt *router) {
 	s.assistLimiter = newLimiter(assistLimitPerDay, 24*time.Hour)
 
 	rt.handleFunc("POST /assistant", s.handleAssistant)
+	rt.handleFunc("POST /assistant/style", s.handleStyleAssistant)
 	rt.handleFunc("POST /jobs", s.handleCreateJob)
 	rt.handleFunc("GET /jobs/{id}", s.handleJobFragment)
 	rt.handleFunc("GET /audio/{id}", s.handleAudio)
@@ -72,6 +73,36 @@ func (s *Server) handleAssistant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, draft)
+}
+
+// handleStyleAssistant rewrites a style and nothing else, for the "Rewrite with
+// AI" helper under every style box. It answers with the new style as JSON; the
+// page puts it in the box and keeps the old one for Undo, and nothing is
+// submitted. It shares the assistant's daily limit, being the same model.
+//
+// The engine picks the editor: YuE2's returns one line, MiniMax's a
+// three-heading caption, each checked before it is returned. The song-page
+// panels send "yue2"; the generate form sends its selected engine.
+func (s *Server) handleStyleAssistant(w http.ResponseWriter, r *http.Request) {
+	if !s.genAllowed(w, r, s.assistLimiter, "assistant") {
+		return
+	}
+	change := strings.TrimSpace(r.FormValue("change"))
+	if change == "" {
+		http.Error(w, `{"error":"empty-change"}`, http.StatusBadRequest)
+		return
+	}
+	style, err := s.llm.RewriteStyle(r.Context(), s.engineOf(r), llm.StyleRequest{
+		Style:  r.FormValue("style"),
+		Change: change,
+		Lyrics: r.FormValue("lyrics"),
+	})
+	if err != nil {
+		s.log.Warn("style assistant", "err", err)
+		s.assistantError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"style": style})
 }
 
 func (s *Server) assistantError(w http.ResponseWriter, err error) {

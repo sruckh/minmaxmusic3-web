@@ -99,12 +99,16 @@ func New(cfg *config.Config, log *slog.Logger) (*Server, error) {
 			// engine" has one vocabulary across the app.
 			Profiles: map[string]llm.Profile{
 				store.EngineMiniMax: {
-					System: assistantPrompt(cfg, log, "llm-assistant-system-prompt.md"),
-					Parse:  llm.ParseDraft,
+					System:      assistantPrompt(cfg, log, "llm-assistant-system-prompt.md"),
+					Parse:       llm.ParseDraft,
+					StyleSystem: assistantPrompt(cfg, log, "llm-style-editor-prompt.md"),
+					ParseStyle:  llm.ParseMiniMaxStyle,
 				},
 				store.EngineYue2: {
-					System: assistantPrompt(cfg, log, "llm-assistant-system-prompt-yue2.md"),
-					Parse:  llm.ParseYue2Draft,
+					System:      assistantPrompt(cfg, log, "llm-assistant-system-prompt-yue2.md"),
+					Parse:       llm.ParseYue2Draft,
+					StyleSystem: assistantPrompt(cfg, log, "llm-style-editor-prompt-yue2.md"),
+					ParseStyle:  llm.ParseYue2Style,
 				},
 			},
 		},

@@ -1,0 +1,28 @@
+<!-- "Rewrite with AI" for one style box. Called with dict: Target (the style
+     textarea's id), Lyrics (the lyrics textarea's id, sent as context) and
+     Engine ("" to follow the form's engine selector). Behaviour lives in
+     /static/style-assist.js.
+
+     The change field has no name, so it never travels with the surrounding
+     form, and Enter rewrites rather than submitting the form. -->
+<div class="style-assist" x-data="mm3StyleRewrite()"
+     data-target="{{.Target}}" data-lyrics="{{.Lyrics}}" data-engine="{{.Engine}}">
+  <div style="display:flex; gap:8px; align-items:center; margin-top:6px;">
+    <button type="button" class="btn btn--ghost btn--sm" @click="toggle()"
+            style="padding:2px 8px; font-size:11px;">✨ Rewrite with AI</button>
+    <button type="button" class="btn btn--ghost btn--sm" x-show="previous !== null" x-cloak
+            @click="undo()" style="padding:2px 8px; font-size:11px;">Undo</button>
+  </div>
+  <div x-show="open" x-cloak style="display:flex; gap:8px; flex-wrap:wrap; margin-top:8px;">
+    <input type="text" class="input" x-ref="change" x-model="change"
+           @keydown.enter.prevent="rewrite()" aria-label="What should change about the style"
+           placeholder="What should change? e.g. more dreamy, add strings"
+           style="flex:1; min-width:200px;">
+    <button type="button" class="btn" @click="rewrite()" :disabled="busy || !change.trim()">
+      <span x-show="!busy">Rewrite</span>
+      <span x-show="busy" x-cloak class="spin" aria-hidden="true"></span>
+      <span x-show="busy" x-cloak>Rewriting…</span>
+    </button>
+  </div>
+  <p class="help" style="color:var(--warn); margin-top:6px;" x-show="error" x-cloak x-text="error" role="alert"></p>
+</div>

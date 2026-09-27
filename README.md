@@ -98,6 +98,11 @@ A song page offers three ways to derive a new song from an existing one. They ke
   - **YuE2** — `shared/llm-assistant-system-prompt-yue2.md`, answered as labelled plain text (`STYLE:` / `LYRICS:` / `COT:` / `NOTES:`), parsed by `llm.ParseYue2Draft`. Its `NOTES` are shown to the user as the assumptions behind the draft.
 - **Thinking disabled by default**: Sends `thinking: {"type": "disabled"}` and `reasoning_effort: "none"` so reasoning models (e.g. `deepseek-v4-flash`) skip internal thinking delays — without these they can take well over a minute to reply. The call itself is still budgeted at a 120-second timeout.
 - **Resilient parsing**: both parsers strip `<think>`/`<reasoning>` blocks and fold server-sent-event replies into a single message. The JSON parser then accepts closed code fences, unclosed code fences, or a raw object anywhere in the reply; the labelled parser slices between its labels, tolerates fences the prompt forbids, and normalises an unusable `COT` rather than discarding the whole draft.
+- **Style editor (`POST /assistant/style`).** A **✨ Rewrite with AI** link sits under every style box: the generate form (both engines; a MiniMax song is reworked there through *Edit in generator*) and the Edit and Cover panels on a YuE2 song. The user describes a change ("more dreamy, add strings"). The current style, that change and the song's lyrics (context only) go to the engine's style editor. The rewritten style replaces the box, **Undo** restores the old text, and nothing is submitted.
+  - **YuE2** — `shared/llm-style-editor-prompt-yue2.md`, one comma-separated line, checked by `llm.ParseYue2Style`.
+  - **MiniMax** — `shared/llm-style-editor-prompt.md`, the three-heading caption (Global Metadata, Vocal Details, Arrangement), checked by `llm.ParseMiniMaxStyle`. A reply without all three headings is refused rather than put in the box.
+  - Both editors keep the singer they are given. Choosing a voice belongs to creating a song, not to editing its style.
+  - It spends the same daily allowance as the song assistant, because it is the same model.
 
 ### ⚡ RunPod Serverless GPU Inference
 - Asynchronous worker queue, **one client per configured engine**: [sruckh/minmaxmusic3-serverless](https://github.com/sruckh/minmaxmusic3-serverless) for MiniMax and [sruckh/Yue2-runpod](https://github.com/sruckh/Yue2-runpod) for YuE2. Both endpoints run under one RunPod account and share its API key.
@@ -279,7 +284,7 @@ Both endpoints run under one RunPod account, and **the existing `RUNPOD_API_KEY`
 
 ## API Reference
 
-Access is enforced by one middleware wrapping the entire mux: anything not listed as **Public** below requires an approved session, and anything under `/admin` additionally requires administrator privilege. State-changing requests are also origin-checked. Beyond the credential endpoints, `/jobs` accepts at most 6 generations per hour per IP and `/assistant` at most 20 drafts per day per IP — both answered with `429 Too Many Requests` and a `Retry-After` header.
+Access is enforced by one middleware wrapping the entire mux: anything not listed as **Public** below requires an approved session, and anything under `/admin` additionally requires administrator privilege. State-changing requests are also origin-checked. Beyond the credential endpoints, `/jobs` accepts at most 6 generations per hour per IP and `/assistant` with `/assistant/style` at most 20 requests per day per IP between them — both answered with `429 Too Many Requests` and a `Retry-After` header.
 
 | Endpoint | Method | Access | Description |
 |---|---|---|---|
@@ -294,6 +299,7 @@ Access is enforced by one middleware wrapping the entire mux: anything not liste
 | `GET /signed/{token}` | `GET` | Public (signed) | Serves one cover recording to a holder of a valid link. The RunPod worker has no session, so **the token is the entire authorisation** — 32 random bytes, stored only as a SHA-256 hash, single-purpose, expiring in two hours. Unknown, lapsed and malformed tokens all answer the same `404`, so it cannot be used to probe which exist. Scoped to this one pattern: the owner-scoped `/audio/{id}` stays session-only. |
 | `GET /` | `GET` | Authenticated | Web console homepage with engine selector, generation form &amp; assistant panel. |
 | `POST /assistant` | `POST` | Authenticated | AI assistant proxy, using the selected engine's prompt and reply format. |
+| `POST /assistant/style` | `POST` | Authenticated | Style editor: rewrites only the style for the chosen engine, returning `{"style": …}`. |
 | `POST /jobs` | `POST` | Authenticated | Validate form and queue a text-to-song generation job, owned by the caller. |
 | `GET /jobs/{id}` | `GET` | Owner / Admin | htmx polling endpoint returning job status or player HTML. |
 | `GET /history` | `GET` | Authenticated | Partitioned library: *My Songs* and *Community Songs*, each paged independently (`?mine=`, `?public=`). |

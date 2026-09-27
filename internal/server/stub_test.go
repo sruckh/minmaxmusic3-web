@@ -185,8 +185,10 @@ func newTestEnvWith(t *testing.T, tweak func(*config.Config)) (http.Handler, *st
 	// paired with the parser its prompt would really produce, so a test that
 	// posts engine=yue2 exercises the YuE2 path rather than the MiniMax one.
 	s.llm.Profiles = map[string]llm.Profile{
-		store.EngineMiniMax: {System: "test minimax prompt", Parse: llm.ParseDraft},
-		store.EngineYue2:    {System: "test yue2 prompt", Parse: llm.ParseYue2Draft},
+		store.EngineMiniMax: {System: "test minimax prompt", Parse: llm.ParseDraft,
+			StyleSystem: "test minimax style prompt", ParseStyle: llm.ParseMiniMaxStyle},
+		store.EngineYue2: {System: "test yue2 prompt", Parse: llm.ParseYue2Draft,
+			StyleSystem: "test yue2 style prompt", ParseStyle: llm.ParseYue2Style},
 	}
 	if err := s.Start(); err != nil {
 		t.Fatal(err)
