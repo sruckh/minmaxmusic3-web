@@ -980,8 +980,8 @@ func TestPartitionedReadsAndClamping(t *testing.T) {
 	if want := "a-new,a-mid,a-old"; strings.Join(ids(got), ",") != want {
 		t.Fatalf("PersonalSongs(alice) = %v, want %s", ids(got), want)
 	}
-	if got, _ := s.PersonalSongs("bob", 10, 0); len(got) != 1 || got[0].ID != "b-one" {
-		t.Fatalf("PersonalSongs(bob) = %v", ids(got))
+	if got, err := s.PersonalSongs("bob", 10, 0); err != nil || len(got) != 1 || got[0].ID != "b-one" {
+		t.Fatalf("PersonalSongs(bob) = %v, err=%v", ids(got), err)
 	}
 	// An unknown owner gets nothing rather than everything.
 	if got, err := s.PersonalSongs("nobody", 10, 0); err != nil || len(got) != 0 {
@@ -1001,8 +1001,8 @@ func TestPartitionedReadsAndClamping(t *testing.T) {
 	}
 
 	// Paging is a window, not a filter.
-	if page2, _ := s.PersonalSongs("alice", 2, 2); len(page2) != 1 || page2[0].ID != "a-old" {
-		t.Fatalf("PersonalSongs page 2 = %v", ids(page2))
+	if page2, err := s.PersonalSongs("alice", 2, 2); err != nil || len(page2) != 1 || page2[0].ID != "a-old" {
+		t.Fatalf("PersonalSongs page 2 = %v, err=%v", ids(page2), err)
 	}
 
 	// Clamping: an absurd limit is capped, a negative one still returns rows,
@@ -1149,8 +1149,8 @@ func TestLastAdminGuard(t *testing.T) {
 	if err := s.UpdateUserStatus(admin.ID, StatusPending); !errors.Is(err, ErrLastAdmin) {
 		t.Fatalf("un-approve last admin = %v, want ErrLastAdmin", err)
 	}
-	got, _ := s.GetUserByID(admin.ID)
-	if got == nil || got.Status != StatusApproved {
+	got := lookup(s.GetUserByID(admin.ID)).found(t, "admin after refusal")
+	if got.Status != StatusApproved {
 		t.Fatalf("the refusal changed the admin: %#v", got)
 	}
 
@@ -1366,8 +1366,8 @@ func TestDeleteUserReturnsStagedUploadsToUnlink(t *testing.T) {
 	if len(left) != 0 {
 		t.Errorf("uploads survived the delete: %v", left)
 	}
-	if theirs, _ := s.CoverUploadsByUser(other.ID); len(theirs) != 1 {
-		t.Errorf("another account's upload was removed: %v", theirs)
+	if theirs, err := s.CoverUploadsByUser(other.ID); err != nil || len(theirs) != 1 {
+		t.Errorf("another account's upload was removed: %v, err=%v", theirs, err)
 	}
 }
 
@@ -1438,8 +1438,8 @@ func TestPurgeExpiredCoverLinks(t *testing.T) {
 	if k, _, err := s.CoverLink(dead); err != nil || k != "" {
 		t.Errorf("the lapsed link survived the purge: err=%v", err)
 	}
-	if k, _, _ := s.CoverLink(live); k == "" {
-		t.Error("the purge removed a live link")
+	if k, _, err := s.CoverLink(live); err != nil || k == "" {
+		t.Errorf("the purge removed a live link: err=%v", err)
 	}
 }
 
@@ -1472,9 +1472,9 @@ func TestPurgeStaleCoverUploadsRespectsTheWindow(t *testing.T) {
 		t.Fatalf("purged %v, want just [stale]", names)
 	}
 
-	left, _ := s.CoverUploadsByUser(u.ID)
-	if len(left) != 1 || left[0] != "fresh" {
-		t.Errorf("remaining uploads = %v, want [fresh]", left)
+	left, err := s.CoverUploadsByUser(u.ID)
+	if err != nil || len(left) != 1 || left[0] != "fresh" {
+		t.Errorf("remaining uploads = %v, err=%v, want [fresh]", left, err)
 	}
 
 	// Running it again finds nothing, so it is safe on a timer.
