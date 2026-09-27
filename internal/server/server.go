@@ -99,11 +99,11 @@ func New(cfg *config.Config, log *slog.Logger) (*Server, error) {
 			// engine" has one vocabulary across the app.
 			Profiles: map[string]llm.Profile{
 				store.EngineMiniMax: {
-					System: assistantPrompt(cfg, "llm-assistant-system-prompt.md"),
+					System: assistantPrompt(cfg, log, "llm-assistant-system-prompt.md"),
 					Parse:  llm.ParseDraft,
 				},
 				store.EngineYue2: {
-					System: assistantPrompt(cfg, "llm-assistant-system-prompt-yue2.md"),
+					System: assistantPrompt(cfg, log, "llm-assistant-system-prompt-yue2.md"),
 					Parse:  llm.ParseYue2Draft,
 				},
 			},
@@ -139,10 +139,12 @@ var sectionTagsJSON = func() template.JS {
 // A missing file leaves that engine's profile without a prompt, which makes
 // Draft() return ErrNoConfig for that engine alone — the other engine's
 // assistant keeps working, and the disabled one fails loudly rather than
-// answering in the wrong format.
-func assistantPrompt(cfg *config.Config, name string) string {
+// answering in the wrong format. The warning is logged here, at boot, because
+// otherwise nothing says why until someone asks that engine for a draft.
+func assistantPrompt(cfg *config.Config, log *slog.Logger, name string) string {
 	b, err := os.ReadFile(filepath.Join(cfg.WebDir, "..", "shared", name))
 	if err != nil {
+		log.Warn("assistant prompt unavailable; that engine's assistant is disabled", "file", name, "err", err)
 		return ""
 	}
 	return string(b)

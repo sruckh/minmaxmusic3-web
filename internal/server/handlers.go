@@ -161,10 +161,10 @@ func scoreMetaOf(abc string) ScoreMeta {
 			firstHeader(&m.Meter, line[2:])
 		case strings.HasPrefix(line, "Q:"):
 			// Q:1/4=145 — the beat note and the value, of which only the value
-			// is worth showing.
-			if _, v, ok := strings.Cut(line, "="); ok {
-				firstHeader(&m.Tempo, v)
-			}
+			// is worth showing. With no "=" the value is "", which firstHeader
+			// leaves unset, so a later Q: can still supply it.
+			_, v, _ := strings.Cut(line, "=")
+			firstHeader(&m.Tempo, v)
 		}
 	}
 	return m
@@ -564,6 +564,9 @@ func badTagLine(lyrics string) bool {
 // by answering 286 (htmx: stop polling).
 func (s *Server) handleJobFragment(w http.ResponseWriter, r *http.Request) {
 	j, err := s.st.Job(r.PathValue("id"), s.caller(r))
+	if err != nil {
+		s.log.Warn("job fragment", "job", r.PathValue("id"), "err", err)
+	}
 	if err != nil || j == nil {
 		http.NotFound(w, r)
 		return
@@ -591,6 +594,9 @@ func (s *Server) handleJobFragment(w http.ResponseWriter, r *http.Request) {
 // so the endpoint cannot be used to probe which ids are real.
 func (s *Server) handleAudio(w http.ResponseWriter, r *http.Request) {
 	g, err := s.readableSong(r, r.PathValue("id"))
+	if err != nil {
+		s.log.Warn("audio", "song", r.PathValue("id"), "err", err)
+	}
 	if err != nil || g == nil {
 		http.NotFound(w, r)
 		return

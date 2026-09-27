@@ -96,8 +96,8 @@ func TestEditWordsOf(t *testing.T) {
 	if st, ly, msg := editWordsOf(req(""), src); st != "rock" || ly != "la" || msg != "" {
 		t.Errorf("fallback = %q %q %q", st, ly, msg)
 	}
-	if st, ly, _ := editWordsOf(req("instructions=jazz&input=oh"), src); st != "jazz" || ly != "oh" {
-		t.Errorf("form wins = %q %q", st, ly)
+	if st, ly, msg := editWordsOf(req("instructions=jazz&input=oh"), src); st != "jazz" || ly != "oh" || msg != "" {
+		t.Errorf("form wins = %q %q %q", st, ly, msg)
 	}
 	if _, _, msg := editWordsOf(req(""), &store.Song{Lyrics: "la"}); msg == "" {
 		t.Error("no style anywhere was accepted")

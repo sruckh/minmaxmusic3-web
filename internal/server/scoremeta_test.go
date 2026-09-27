@@ -67,3 +67,11 @@ func TestScoreMetaTakesTheFirstHeaderNotALaterOne(t *testing.T) {
 		t.Errorf("Meter/Tempo = %q/%q, want 3/4/90", m.Meter, m.Tempo)
 	}
 }
+
+// A Q: with no "=" has no value to show, and must not block a later Q: that
+// does — it counts as no header at all.
+func TestScoreMetaSkipsATempoWithoutAValue(t *testing.T) {
+	if m := scoreMetaOf("X:1\nQ:Allegro\nQ:1/4=90\nK:C\n"); m.Tempo != "90" {
+		t.Errorf("Tempo = %q, want 90", m.Tempo)
+	}
+}
