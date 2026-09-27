@@ -234,11 +234,10 @@ func TestLiveYuE2Edit(t *testing.T) {
 	t.Logf("create done: %s | score %d bytes | %s", before, len(score), headerOf(string(score)))
 
 	// --- step 2: edit it --------------------------------------------------
-	// The one edit that is genuinely a performance change. Key and meter are
-	// deliberately left alone: ABC note tokens are relative, so changing K:
-	// respells rather than transposes, and changing M: makes the bars the wrong
-	// length — which nothing validates, because the worker defers per-measure
-	// arithmetic to a tokenizer it cannot run without a GPU.
+	// Tempo only. Key has its own probe (TestLiveYuE2Transpose), and meter is
+	// left alone: changing M: makes the bars the wrong length — which nothing
+	// validates, because the worker defers per-measure arithmetic to a
+	// tokenizer it cannot run without a GPU.
 	edited := retempo(string(score), 132)
 	if edited == string(score) {
 		t.Fatalf("the score had no Q: header to rewrite; headers were %s", headerOf(string(score)))
@@ -388,9 +387,8 @@ func setOnce(dst *string, v string) {
 
 // retempo rewrites the Q: header, leaving everything else byte-identical.
 //
-// Tempo is the one edit that is unambiguously a performance change: nothing in
-// the score depends on it. Key and meter do not have that property, which is
-// why this probe does not touch them.
+// Nothing else in the score depends on the tempo, so this one line is the
+// whole of a tempo change.
 func retempo(abc string, bpm int) string {
 	lines := strings.Split(abc, "\n")
 	for i, line := range lines {

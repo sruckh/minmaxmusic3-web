@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	notation "github.com/sruckh/minmaxmusic3-web/internal/abc"
 	"github.com/sruckh/minmaxmusic3-web/internal/llm"
 	"github.com/sruckh/minmaxmusic3-web/internal/store"
 	"github.com/sruckh/minmaxmusic3-web/internal/worker"
@@ -138,6 +139,60 @@ func (m ScoreMeta) BPM() int {
 		return 0
 	}
 	return n
+}
+
+// maxKeyShift bounds the edit panel's key picker: six semitones either way
+// reaches every key, and the direction matters because it decides whether the
+// melody is sung higher or lower.
+const maxKeyShift = 6
+
+// KeyOption is one entry in the edit panel's key picker: the key a song lands
+// in and how far the melody moves to get there.
+type KeyOption struct {
+	Shift int
+	Label string
+}
+
+// KeyOptions lists the keys this song can be moved to, highest first, with
+// the current key in the middle. Empty when the score's key is not one the
+// transposer can move — the panel then shows the key without a picker.
+func (m ScoreMeta) KeyOptions() []KeyOption {
+	if _, err := notation.TransposeKey(m.Key, 1); err != nil {
+		return nil
+	}
+	var opts []KeyOption
+	for n := maxKeyShift; n >= -maxKeyShift; n-- {
+		name := m.Key
+		if n != 0 {
+			name, _ = notation.TransposeKey(m.Key, n)
+		}
+		opts = append(opts, KeyOption{Shift: n, Label: keyName(name) + " — " + shiftWords(n)})
+	}
+	return opts
+}
+
+// keyName spells a score key for people: "D#m" is "D♯ minor".
+func keyName(k string) string {
+	mode := " major"
+	if strings.HasSuffix(k, "m") {
+		k, mode = k[:len(k)-1], " minor"
+	}
+	return strings.NewReplacer("#", "♯", "b", "♭").Replace(k) + mode
+}
+
+func shiftWords(n int) string {
+	switch {
+	case n == 0:
+		return "as it is"
+	case n == 1:
+		return "1 semitone up"
+	case n == -1:
+		return "1 semitone down"
+	case n > 0:
+		return fmt.Sprintf("%d semitones up", n)
+	default:
+		return fmt.Sprintf("%d semitones down", -n)
+	}
 }
 
 // scoreMetaOf reads the properties the ABC headers carry, for display.
@@ -348,17 +403,19 @@ func seedFor(r *http.Request, src *store.Song) *int64 {
 // handleEditSong re-renders an existing song from its stored score.
 //
 // The design follows what an edit can actually do. Editing re-renders the whole
-// song — YuE2 does not preserve the waveform outside the edited region — and
-// only tempo is a genuine performance change. Key does not re-key anything,
-// because ABC note tokens are relative, so changing K: respells the same letters
-// rather than transposing them. Meter is worse: changing M: makes the bars the
+// song — YuE2 does not preserve the waveform outside the edited region. Tempo
+// and key are the two performance changes, and the server makes both, so the
+// user never touches the score. Key is a transposition (abc.Transpose), not an
+// edit of the K: line: an ABC note letter is an absolute pitch, so changing K:
+// alone bends the melody into another mode. Measured 2026-09-27: a K:-only edit
+// moved a song by −1 or −2 semitones note by note, while the transposed score
+// came back exactly +2. Meter stays read-only: changing M: makes the bars the
 // wrong length, and nothing catches it, because the worker validates score
-// *format* only and defers per-measure arithmetic to a tokenizer that cannot run
-// without a GPU.
+// *format* only and defers per-measure arithmetic to a tokenizer that cannot
+// run without a GPU.
 //
 // So the score travels from the stored copy, not from a text box, and the form
-// offers the three things that are honest: a new arrangement, a new tempo, and
-// new words.
+// offers a new arrangement, tempo, key, and words.
 func (s *Server) handleEditSong(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "bad form", http.StatusBadRequest)
@@ -451,14 +508,31 @@ func editWordsOf(r *http.Request, src *store.Song) (style, lyrics, msg string) {
 	// empty lyric block here is a mistake rather than an instrumental request,
 	// and it is caught before a job is queued for it.
 	if lyrics == "" {
+		// A cover whose words were transcribed stores none: the worker
+		// transcribes them but does not send them back. Say that, rather than
+		// the generate form's message, which names a checkbox this form lacks.
+		if src.Mode == store.ModeCover {
+			return "", "", "This cover's words came from the recording and weren't kept. Type the lyrics in to edit it."
+		}
 		return "", "", "An edit needs lyrics — untick Instrumental, or write some."
 	}
 	return style, lyrics, ""
 }
 
-// editScoreOf is the stored score with the form's tempo applied, or a message
-// for the user. A blank tempo leaves the score as it is.
+// editScoreOf is the stored score with the form's key and tempo applied, or a
+// message for the user. A blank or zero field leaves that part as it is.
 func editScoreOf(r *http.Request, abc string) (string, string) {
+	if v := strings.TrimSpace(r.FormValue("transpose")); v != "" && v != "0" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < -maxKeyShift || n > maxKeyShift {
+			return "", "Pick a key from the list."
+		}
+		moved, err := notation.Transpose(abc, n)
+		if err != nil {
+			return "", "This song's key can't be changed automatically. Try another edit instead."
+		}
+		abc = moved
+	}
 	v := strings.TrimSpace(r.FormValue("tempo"))
 	if v == "" {
 		return abc, ""

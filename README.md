@@ -64,8 +64,9 @@ The application is **multi-user and closed by default**: every route except sign
 
 ### ✂️ Edit — Re-render a Song From Its Score *(YuE2)*
 - A YuE2 song carries the score the model planned. Editing re-renders from that score with a new arrangement, tempo or words.
-- **Only tempo is a genuine performance change.** Key does not re-key anything — ABC note tokens are relative, so changing `K:` respells the same letters rather than transposing — and meter makes the bars the wrong length, which nothing validates, because the worker checks score *format* only and defers measure arithmetic to a tokenizer it cannot run without a GPU.
-- So there is **no raw-score editor**: tempo is editable, key and meter are read-only, and the score travels from the stored copy rather than from a text box.
+- **Tempo and key are the performance changes, and the server makes them.** Tempo rewrites the score's `Q:` line. **Key** is a picker listing the twelve keys up to six semitones either way, named plainly ("F minor — 2 semitones up"). Choosing one transposes the whole score: every note, chord symbol and key field moves by the same interval, so it is the same tune sung higher or lower. Measured on a live render: the transposed score came back exactly +2 semitones.
+- Changing only the `K:` line would *not* do this. ABC note letters are absolute pitches and `K:` only sets which ones are sharp or flat, so a `K:`-only edit bends the melody into another mode. Measured: notes moved by −1 or −2 semitones unevenly, not +2.
+- **Meter stays read-only.** Changing it makes the bars the wrong length, which nothing validates: the worker checks score *format* only, and leaves bar arithmetic to a tokenizer it cannot run without a GPU. So there is **no raw-score editor**, and the score travels from the stored copy rather than from a text box.
 - Editing re-renders the whole song. The waveform outside the change is not preserved, and the form says so.
 
 ### 🎨 Cover — Re-style a Recording *(YuE2)*
@@ -85,7 +86,7 @@ A song page offers three ways to derive a new song from an existing one. They ke
 | You want | Use | What is kept | What can change |
 |---|---|---|---|
 | The same words in a **new genre, tempo or feel** | **Edit in generator**, then generate | Nothing but what you leave in the form | Everything — the model writes a new melody and score |
-| The **same song, re-sung** with new words or a new tempo | **Edit** panel *(YuE2)* | The stored score: melody, harmony, key, meter | Lyrics and tempo (`Q:`). Style strength is offered but defaults to *Off*, because guidance on an edit is untested. |
+| The **same song, re-sung** with new words, a new tempo or a new key | **Edit** panel *(YuE2)* | The stored score: melody, harmony, meter | Lyrics, tempo (`Q:`) and key (the whole score transposed). Style strength is offered but defaults to *Off*, because guidance on an edit is untested. A cover can be re-keyed the same way, by opening it and using Edit, but only if its lyrics were typed in. Words transcribed from the recording are not kept, so they have to be typed in first. |
 | The **same melody** in a new arrangement | **Cover** panel *(YuE2)* | The transcribed melody, tempo and key | Instruments and production, through the style text at *Balanced* strength, and the lyrics |
 
 **Edit in generator** is a plain create: it copies the song's title, lyrics, style and seed into the generate form and queues nothing until you submit. It is the one route that honours a tempo or genre change, because nothing constrains the model to the old song. The cost is that the melody is new too — asking the original rock ballad for 80s synth-pop this way produced a 115 BPM song in a different key.
@@ -367,6 +368,8 @@ They read the real endpoint from the environment and expect to run **inside the 
 CGO_ENABLED=0 go test -tags live -c -o /tmp/probe.test ./internal/worker
 docker compose run --rm --no-deps -T -v /tmp:/probe:ro app /probe/probe.test -test.run TestLive -test.v
 ```
+
+`TestLiveYuE2Transpose` renders one stored song twice, once with only `K:` changed and once fully transposed, and writes the audio and scores to `/probe-out`. Give it a writable host folder and a longer timeout: add `-v /tmp/mm3-transpose:/probe-out` and `-test.timeout 80m` (the host folder must be `chmod 777`, because the container runs as a non-root user). `PROBE_SONG_ID` and `PROBE_SEMITONES` choose the song and the shift.
 
 `PROBE_RUNPOD_API_KEY`, when set, takes precedence over `RUNPOD_API_KEY` — so a throwaway credential can be used for one run without touching Infisical, and without relying on `-e`, which `infisical run` overwrites with its own value.
 

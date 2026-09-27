@@ -62,13 +62,13 @@ func TestSongPageOffersEditForAScoredSong(t *testing.T) {
 	if !strings.Contains(body, "x-model.number=\"tempo\"") || !strings.Contains(body, "tempo: 145") {
 		t.Error("the edit panel did not seed the tempo from the stored score")
 	}
-	// Key and meter are shown, read-only, because they cannot be changed
-	// meaningfully — only tempo is a genuine performance edit.
+	// Key and meter are shown with the song; key is changed through the picker.
 	if !strings.Contains(body, "key Cm") || !strings.Contains(body, "4/4") {
 		t.Error("the score's key and meter are not displayed")
 	}
 	// And no free-text score box: it would let someone change M: and silently
-	// ruin the bars, with nothing validating it.
+	// ruin the bars, with nothing validating it. Key and tempo are rewritten by
+	// the server instead.
 	if strings.Contains(body, `name="abc"`) || strings.Contains(body, `name="score"`) {
 		t.Error("the edit form exposes the raw score, which must not be editable")
 	}
@@ -289,5 +289,131 @@ func TestEditPanelTempoIsOnlyANumber(t *testing.T) {
 	}
 	if strings.Contains(body, "tempo: 1, open") {
 		t.Error("score text reached the Alpine expression")
+	}
+}
+
+// The key picker lists the keys a song can move to, highest first, with its
+// own key selected — named for people, not as ABC.
+func TestSongPageOffersAKeyPicker(t *testing.T) {
+	h, _, srv := newTestEnvWith(t, withYue2Frozen)
+	alice, tok := mkSession(t, srv, "key-picker", store.StatusApproved, store.RoleUser)
+	g := mkScoredSong(t, srv, "keyed-song", alice.ID,
+		"X:1\nM:4/4\nL:1/16\nQ:1/4=100\nK:Cm\nV: Vocal\nc4e4g8|\nV: Ins\n\"Cm\"C16|\n")
+
+	body := do(h, "GET", "/songs/"+g.ID, cookieFor(tok)).Body.String()
+	for _, want := range []string{
+		`name="transpose"`,
+		`<option value="0" selected>C minor — as it is</option>`,
+		`<option value="2">D minor — 2 semitones up</option>`,
+		`<option value="-1">B minor — 1 semitone down</option>`,
+		`<option value="6">`, `<option value="-6">`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("song page missing %q", want)
+		}
+	}
+	if strings.Index(body, `value="6"`) > strings.Index(body, `value="-6"`) {
+		t.Error("keys are not listed highest first")
+	}
+}
+
+// A key the transposer cannot move gets no picker, rather than a control that
+// would only ever answer with an error.
+func TestSongPageHidesKeyPickerForAnUnsupportedKey(t *testing.T) {
+	h, _, srv := newTestEnvWith(t, withYue2Frozen)
+	alice, tok := mkSession(t, srv, "key-modal", store.StatusApproved, store.RoleUser)
+	g := mkScoredSong(t, srv, "modal-song", alice.ID,
+		"X:1\nM:4/4\nL:1/16\nQ:1/4=100\nK:Dmix\nV: Vocal\nZ|\nV: Ins\nZ|\n")
+
+	body := do(h, "GET", "/songs/"+g.ID, cookieFor(tok)).Body.String()
+	if !strings.Contains(body, "Re-render this song") {
+		t.Fatal("the edit panel itself should still be offered")
+	}
+	if strings.Contains(body, `name="transpose"`) {
+		t.Error("a key picker was offered for a key that cannot be moved")
+	}
+	res := postFormAs(h, "/songs/"+g.ID+"/edit", url.Values{"transpose": {"2"}}, tok)
+	if res.Code != http.StatusBadRequest {
+		t.Errorf("moving an unsupported key = %d, want 400", res.Code)
+	}
+}
+
+// A key change reaches the job as a transposed score: every note, chord and
+// key field moved, alongside any tempo change.
+func TestEditTransposesTheScore(t *testing.T) {
+	h, _, srv := newTestEnvWith(t, withYue2Frozen)
+	alice, tok := mkSession(t, srv, "key-edit", store.StatusApproved, store.RoleUser)
+	g := mkScoredSong(t, srv, "transpose-me", alice.ID,
+		"X:1\nM:4/4\nL:1/16\nQ:1/4=100\nK:Cm\nV: Vocal\nc4e4g8|\nV: Ins\n\"Cm\"C16|\n")
+
+	res := postFormAs(h, "/songs/"+g.ID+"/edit", url.Values{"transpose": {"2"}, "tempo": {"120"}}, tok)
+	if res.Code >= 400 {
+		t.Fatalf("status = %d; body: %s", res.Code, res.Body.String())
+	}
+	jobs, _ := srv.st.DequeueQueued(10)
+	if len(jobs) != 1 {
+		t.Fatalf("queued %d jobs, want 1", len(jobs))
+	}
+	want := "X:1\nM:4/4\nL:1/16\nQ:1/4=120\nK:Dm\nV: Vocal\nd4f4a8|\nV: Ins\n\"Dm\"D16|\n"
+	if jobs[0].ABC != want {
+		t.Errorf("job score:\n%s\nwant:\n%s", jobs[0].ABC, want)
+	}
+}
+
+// "As it is" sends the stored score untouched, and an out-of-range or garbled
+// shift is refused before anything is queued.
+func TestEditKeyShiftBounds(t *testing.T) {
+	h, _, srv := newTestEnvWith(t, withYue2Frozen)
+	alice, tok := mkSession(t, srv, "key-bounds", store.StatusApproved, store.RoleUser)
+	abc := "X:1\nM:4/4\nL:1/16\nQ:1/4=100\nK:C\nV: Vocal\nc16|\nV: Ins\nZ|\n"
+	g := mkScoredSong(t, srv, "bounded", alice.ID, abc)
+
+	for _, v := range []string{"7", "-7", "up"} {
+		res := postFormAs(h, "/songs/"+g.ID+"/edit", url.Values{"transpose": {v}}, tok)
+		if res.Code != http.StatusBadRequest {
+			t.Errorf("transpose=%q = %d, want 400", v, res.Code)
+		}
+	}
+	if res := postFormAs(h, "/songs/"+g.ID+"/edit", url.Values{"transpose": {"0"}}, tok); res.Code >= 400 {
+		t.Fatalf("transpose=0 refused: %d", res.Code)
+	}
+	jobs, _ := srv.st.DequeueQueued(10)
+	if len(jobs) != 1 || jobs[0].ABC != abc {
+		t.Errorf("\"as it is\" did not send the stored score unchanged: %d jobs", len(jobs))
+	}
+}
+
+// A cover whose words were transcribed stores none, so its edit is refused
+// with a message that says why and what to do — not the generate form's
+// message about an Instrumental checkbox this form does not have.
+func TestEditExplainsATranscribedCover(t *testing.T) {
+	h, _, srv := newTestEnvWith(t, withYue2Frozen)
+	alice, tok := mkSession(t, srv, "cover-words", store.StatusApproved, store.RoleUser)
+	g := &store.Song{
+		ID: "transcribed-cover", JobID: "job-transcribed-cover", UserID: alice.ID,
+		Caption: "jazz", Engine: store.EngineYue2, Mode: store.ModeCover, Cot: "melody",
+		Delivery: "s3", AudioPath: "/tmp/transcribed-cover.m4a",
+		ScoreABC:  "X:1\nM:4/4\nL:1/16\nQ:1/4=77\nK:D#m\nV: Vocal\nd16|\nV: Ins\nZ|\n",
+		CreatedAt: time.Now().UTC(),
+	}
+	if err := srv.st.CreateSong(g); err != nil {
+		t.Fatal(err)
+	}
+	res := postFormAs(h, "/songs/"+g.ID+"/edit", url.Values{"transpose": {"2"}}, tok)
+	if res.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", res.Code)
+	}
+	if !strings.Contains(res.Body.String(), "came from the recording") {
+		t.Errorf("message does not explain the missing words: %s", res.Body.String())
+	}
+}
+
+func TestKeyName(t *testing.T) {
+	for k, want := range map[string]string{
+		"C": "C major", "D#m": "D♯ minor", "Bb": "B♭ major", "Bbm": "B♭ minor", "F#": "F♯ major",
+	} {
+		if got := keyName(k); got != want {
+			t.Errorf("keyName(%q) = %q, want %q", k, got, want)
+		}
 	}
 }

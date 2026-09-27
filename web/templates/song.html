@@ -80,8 +80,9 @@
         </p>
         <p class="help">
           The melody, tempo and key come from the recording, so a tempo or key in
-          the style is ignored. For the same words in a new genre or tempo, use
-          <b>Edit in generator</b> instead — it writes a new song.
+          the style is ignored. To change the key or tempo, generate the cover,
+          then open it and use <b>Edit</b>. For the same words as a brand-new
+          song, use <b>Edit in generator</b> instead.
         </p>
         <form hx-post="/songs/{{.Song.ID}}/cover" hx-target="#cover-job"
               hx-swap="innerHTML" hx-encoding="multipart/form-data" style="margin-top:12px;">
@@ -162,14 +163,12 @@
     <!-- Edit (re-render). Only on a song that has a score — a MiniMax song has
          none, so there is nothing to re-render from.
 
-         Why there is no score text box: editing re-renders the whole song, and
-         only tempo is a genuine performance change. Key does not re-key
-         anything (ABC note tokens are relative, so K: respells rather than
-         transposes) and meter makes the bars the wrong length — which nothing
-         catches, because the worker validates score format only and defers
-         per-measure arithmetic to a tokenizer it cannot run without a GPU. A
-         free-text score field would therefore let someone silently wreck a
-         song, with no warning from us or the worker.
+         Why there is no score text box: tempo and key are changed by the
+         server, which rewrites the score consistently (a key change moves every
+         note and chord — see abc.Transpose). A hand-edited score could change
+         meter and make the bars the wrong length, which nothing catches,
+         because the worker validates score format only and defers per-measure
+         arithmetic to a tokenizer it cannot run without a GPU.
 
          The score is read from the stored copy, never posted back. -->
     <section class="panel" style="margin-bottom: calc(var(--unit)*2)"
@@ -182,7 +181,7 @@
       <div x-show="open" x-cloak>
         <p class="help" style="margin-top:12px;">
           Re-renders the whole song from its stored score with a new arrangement,
-          tempo or words. The waveform outside the change is <b>not</b> preserved —
+          tempo, key or words. The waveform outside the change is <b>not</b> preserved —
           this produces a new take, not a patch.
         </p>
         <form hx-post="/songs/{{.Song.ID}}/edit" hx-target="#edit-job" hx-swap="innerHTML"
@@ -197,13 +196,28 @@
           </div>
           <div class="rack-row">
             <span class="field-label">Tempo</span>
-            <!-- The one edit that is unambiguously a performance change. Key
-                 and meter are shown above, read-only, because they cannot be
-                 changed meaningfully. -->
+            <!-- Tempo rewrites the score's Q: header and nothing else. -->
             <input type="number" class="input" name="tempo" x-model.number="tempo"
                    min="20" max="400" style="width:auto;flex:0 1 110px;">
             <span class="help">BPM — was {{with .Score}}{{.Tempo}}{{else}}unknown{{end}}</span>
           </div>
+          {{with .Score}}{{with .KeyOptions}}
+          <!-- Key moves the whole song: every note and chord shifts by the same
+               interval, so it is the same tune, higher or lower. Listed highest
+               first, with the song's own key selected. Absent when the score's
+               key is not one the transposer can move. -->
+          <div class="rack-row" style="flex-direction:column; align-items:stretch;">
+            <label class="field-label" for="edit-key">Key</label>
+            <select id="edit-key" name="transpose" style="margin-top:6px;">
+              {{range .}}<option value="{{.Shift}}"{{if eq .Shift 0}} selected{{end}}>{{.Label}}</option>
+              {{end}}
+            </select>
+            <p class="help">
+              The same melody and chords, sung higher or lower. Big moves can push
+              the singer out of a comfortable range.
+            </p>
+          </div>
+          {{end}}{{end}}
           <!-- Style strength is YuE2's cfg_scale. Presets, not a number: the
                usable range is narrow and was found by listening — at 6 a cover
                slurred and dropped words. See styleStrengths in handlers.go. -->
