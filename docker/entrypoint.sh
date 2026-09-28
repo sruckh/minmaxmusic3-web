@@ -31,10 +31,12 @@ BOOTSTRAP_VALUE="$(cat "$INFISICAL_CLIENT_SECRET_FILE")"
 }
 
 echo "entrypoint: authenticating to Infisical at ${INFISICAL_DOMAIN} (${INFISICAL_ENV})" >&2
-INFISICAL_TOKEN="$(infisical login \
+# Secret goes in the login process's env, not argv: /proc/<pid>/cmdline is
+# world-readable (host `ps` sees it), /proc/<pid>/environ is owner-only.
+INFISICAL_TOKEN="$(INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET="${BOOTSTRAP_VALUE}" \
+	infisical login \
 	--method=universal-auth \
 	--client-id="${INFISICAL_CLIENT_ID}" \
-	--client-secret="${BOOTSTRAP_VALUE}" \
 	--domain="${INFISICAL_DOMAIN}" \
 	--plain --silent)"
 export INFISICAL_TOKEN
