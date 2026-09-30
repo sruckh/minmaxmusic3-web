@@ -1,0 +1,28 @@
+# Litestream continuously replicates the SQLite file the app writes.
+#
+# The app and the litestream service mount the same volume at /data, so
+# litestream sees the DB and its WAL (the app opens SQLite in WAL mode). The
+# replica is off-host: an S3-compatible bucket (Backblaze B2). Every value is
+# an environment expansion filled in by `infisical run` in the container
+# entrypoint — no credential is written here.
+#
+# Bucket layout: <bucket>/mm3/db     — this replica
+#                <bucket>/mm3/files  — everything else under /data
+#                                      (docker/files-sync.sh)
+
+# Metrics endpoint, loopback only. The compose healthcheck reads it.
+addr: "127.0.0.1:9090"
+
+# A snapshot every 6h, kept 7 days: restore replays at most 6h of WAL.
+snapshot:
+  interval: 6h
+  retention: 168h
+
+dbs:
+  - path: /data/mm3.db
+    replica:
+      url: s3://${MM3_LS_BUCKET}/mm3/db
+      endpoint: ${MM3_LS_ENDPOINT}
+      region: ${MM3_LS_REGION}
+      access-key-id: ${MM3_LS_KEY_ID}
+      secret-access-key: ${MM3_LS_APP_KEY}

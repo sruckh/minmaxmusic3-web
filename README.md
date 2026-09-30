@@ -22,6 +22,7 @@
   <a href="#features">Features</a> •
   <a href="#architecture">Architecture</a> •
   <a href="#quick-start">Quick Start</a> •
+  <a href="#backup--restore">Backup</a> •
   <a href="#authentication--administration">Authentication</a> •
   <a href="#api-reference">API Reference</a> •
   <a href="#configuration">Configuration</a> •
@@ -121,6 +122,7 @@ A song page offers three ways to derive a new song from an existing one. They ke
 
 ### 💾 Song Library & Playback
 - **SQLite Database**: Persists job states and song metadata in `/data/mm3.db` using WAL mode.
+- **Off-host backup**: the database is replicated continuously and the audio files are copied on a timer, to an S3-compatible bucket. An empty volume is restored automatically before the app starts. See [Backup & Restore](#backup--restore).
 - **Local Timezone Display**: Creation timestamps automatically format in the user's local browser timezone.
 - **Named by you**: give a song a title on the generate form; leave it blank and one is derived from the style caption. Either way it can be renamed in place from the history list.
 - **Playback & Management**: Dedicated song playback page with audio player, lyrics display, style caption, inline title editing, deletion, and — for the owner — *Edit in generator*, which copies the song back into the form to be reworked.
@@ -136,7 +138,7 @@ A song page offers three ways to derive a new song from an existing one. They ke
 ## Architecture
 
 <p align="center">
-  <img src="assets/readme/architecture.svg" alt="MiniMax Music 3 System Architecture" width="100%">
+  <img src="assets/readme/architecture.svg" alt="System architecture: browser, Go server, LLM gateway, RunPod GPU workers for MiniMax Music 3 and YuE2, the /data volume, and off-host backup through restore, Litestream and files-sync" width="100%">
 </p>
 
 ### Execution Flow
@@ -168,6 +170,7 @@ POST /songs/{id}/cover
 - Infisical environment configuration &amp; client secret
 - `ADMIN_USER` and `ADMIN_PASSWORD` present in the Infisical project — **without both, the deployment has no administrator and no account can ever be approved.** See [Authentication & Administration](#authentication--administration).
 - `RUNPOD_ENDPOINT` and `RUNPOD_API_KEY` for MiniMax. To offer YuE2 as well, add `YUE2_RUNPOD_ENDPOINT`; without it the engine is simply not offered.
+- `MM3_LS_BUCKET`, `MM3_LS_ENDPOINT`, `MM3_LS_REGION`, `MM3_LS_KEY_ID` and `MM3_LS_APP_KEY` for the off-host backup — **all five, or nothing starts.** The `restore` service refuses to run without them and the app waits for it. See [Backup & Restore](#backup--restore).
 
 ### Bring Up the Stack
 Run the bring-up script to decrypt secrets into RAM (`/dev/shm`) and start the application:
@@ -175,6 +178,8 @@ Run the bring-up script to decrypt secrets into RAM (`/dev/shm`) and start the a
 ```bash
 ./scripts/up.sh --build
 ```
+
+This starts four containers: `mm3-app`, plus `mm3-litestream` and `mm3-files-sync` for the backup, and `mm3-restore`, which runs once, exits `0`, and stays stopped. That is normal.
 
 ### Verify Container Logs
 ```bash
@@ -194,6 +199,62 @@ level=WARN msg="administrator login disabled: ADMIN_USER and ADMIN_PASSWORD must
 ```
 
 `GET /healthz` still returns `200 OK` in that state and the container is reported healthy, so this warning is the only signal that the instance cannot be administered.
+
+`scripts/up.sh` ends by checking the backup and prints one line for each of the two services. **Read them after every bring-up**, because the app is healthy either way:
+
+```text
+up.sh: database replication to the bucket is running
+up.sh: audio/uploads sync to the bucket completed a pass
+```
+
+A `WARNING` in place of either means that part of the backup is not working; see [Backup & Restore](#backup--restore).
+
+---
+
+## Backup & Restore
+
+The `data` volume holds everything that cannot be regenerated: accounts, songs,
+history, and the audio files. It is replicated off-host to an S3-compatible
+bucket, because nothing else keeps a copy — a removed volume is otherwise
+total loss.
+
+| Service | What it does |
+|---|---|
+| `litestream` | Continuously replicates `/data/mm3.db` to `s3://<bucket>/mm3/db`. Snapshot every 6 h, kept 7 days. |
+| `files-sync` | Copies audio and staged uploads (everything under `/data` but the database) to `s3://<bucket>/mm3/files` every 15 min (`MM3_FILES_SYNC_INTERVAL`, seconds). Uses `rclone copy`, never `sync`, so a mistakenly empty volume cannot erase the backup. |
+| `restore` | Runs once before the app. When `/data` has no database it restores one from the bucket; when `/data/audio` is missing it copies the files back. With data present it changes nothing. |
+
+**Recovery is automatic.** Bring the stack up on an empty volume and `restore`
+repopulates it before the app starts. If the bucket cannot be read, `restore`
+exits non-zero and the app does not start — better a stopped app than one that
+comes up on an empty database and replicates it over the real one. An empty
+bucket (first ever start) is not an error.
+
+Five secrets must be present in the Infisical environment the stack runs from
+(`INFISICAL_ENV`, default `dev`): `MM3_LS_BUCKET`, `MM3_LS_ENDPOINT`,
+`MM3_LS_REGION`, `MM3_LS_KEY_ID`, `MM3_LS_APP_KEY`. Scope the application key to
+that one bucket. `scripts/up.sh` reports whether replication and the file sync
+completed a pass — read those two lines after every bring-up, since the app is
+healthy either way.
+
+**Upgrading an existing deployment:** add the five secrets *before* the next
+`scripts/up.sh`. Without them `restore` exits non-zero and nothing starts —
+including the app — which is deliberate: the alternative is running with no
+backup and no warning. Nothing needs migrating; replication starts from the
+database as it is.
+
+`MM3_FILES_SYNC_INTERVAL` is read inside the `files-sync` container, so a shell
+variable on the host does not reach it. To change it from the default of 900,
+set it as a secret in the same Infisical environment.
+
+Litestream adds two bookkeeping tables (`_litestream_seq`, `_litestream_lock`)
+to `mm3.db`; the app ignores them.
+
+**Keep automated cleanup away from volumes.** A cleanup job that prunes
+"unused" volumes deletes this one whenever the stack happens to be stopped —
+after a reboot, for example. This is exactly how the data was lost on
+2026-09-29. Do not run `docker system prune --volumes` or `docker volume prune`
+on this host, and keep volume pruning disabled in any scheduled cleaner.
 
 ---
 
@@ -345,6 +406,14 @@ Values marked *(Infisical)* have no default. They are stored in the Infisical pr
 | `YUE2_RUNPOD_API_KEY` | *(Infisical)* | Optional, and normally unnecessary — `RUNPOD_API_KEY` covers both endpoints. Set it only if your key is scoped to named endpoints and cannot reach YuE2; that shows up as a `403` for the YuE2 endpoint alone. Set, it takes precedence. |
 | `ADMIN_USER` | *(Infisical)* | **Required.** Static administrator login name. Blank disables administrator sign-in — see [Authentication & Administration](#authentication--administration). |
 | `ADMIN_PASSWORD` | *(Infisical)* | **Required.** Static administrator password, compared in constant time. Blank disables administrator sign-in. |
+| `MM3_LS_BUCKET` | *(Infisical)* | **Required.** Bucket holding the backup: `mm3/db` (Litestream) and `mm3/files` (audio and uploads). |
+| `MM3_LS_ENDPOINT` | *(Infisical)* | **Required.** S3 API endpoint URL of the bucket's provider. |
+| `MM3_LS_REGION` | *(Infisical)* | **Required.** The bucket's region. |
+| `MM3_LS_KEY_ID` | *(Infisical)* | **Required.** Application key ID. Scope the key to the one bucket. |
+| `MM3_LS_APP_KEY` | *(Infisical)* | **Required.** Application key secret. |
+| `MM3_FILES_SYNC_INTERVAL` | `900` | Seconds between audio/upload sync passes. Read by the `files-sync` container, so set it in Infisical, not the host shell. |
+
+> ⚠️ The five `MM3_LS_*` secrets are the opposite: their absence stops the stack from starting at all. See [Backup & Restore](#backup--restore).
 
 > ⚠️ `ADMIN_USER` and `ADMIN_PASSWORD` are the two secrets whose absence does **not** break the health check. A deploy missing them starts, serves, accepts registrations, and reports healthy — with no way to approve anyone. Confirm `admin_login=true` in the `config loaded` log line after every deploy.
 

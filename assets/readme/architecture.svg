@@ -1,122 +1,154 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 480" width="100%" height="auto">
-  <title>MiniMax Music 3 System Architecture Diagram</title>
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="940" viewBox="0 0 1200 940" role="img" aria-labelledby="title desc">
+  <title id="title">MiniMax Music 3 system architecture, with off-host backup</title>
+  <desc id="desc">A browser talks to the Go server, which calls an LLM gateway and RunPod GPU workers (MiniMax Music 3, and YuE2 when configured) and writes to the /data volume holding the SQLite database, audio files and cover uploads. A restore job refills an empty /data volume from an S3-compatible bucket before the app starts. Litestream streams the database to the bucket and files-sync copies audio and uploads to it.</desc>
+
   <defs>
     <style>
-      @import url('https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;600;700&amp;family=IBM+Plex+Mono:wght@400;600&amp;display=swap');
-
-      :root {
-        --bg-color: #1C0A10;
-        --panel-bg: #2D121B;
-        --border-color: #4A1F2C;
-        --text-main: #FFFFFF;
-        --text-muted: #CABAC0;
-        --teal-accent: #004D71;
-        --crimson-hot: #E0004C;
-        --green-level: #44A400;
-        --violet-aux: #95009C;
-        --line-color: #E0004C;
-      }
-
+      .bg  { fill: #1C0A10; }
+      .box { fill: #2D121B; stroke: #4A1F2C; stroke-width: 1.5; }
+      .hteal  { fill: #004D71; }
+      .hcrim  { fill: #E0004C; }
+      .hgreen { fill: #3A8C00; }
+      .hviolet{ fill: #95009C; }
+      .ttl { font: 700 32px -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif; fill: #FFFFFF; }
+      .kick{ font: 600 16px ui-monospace, SFMono-Regular, Menlo, monospace; fill: #CABAC0; letter-spacing: 0.08em; }
+      .h   { font: 700 18px ui-monospace, SFMono-Regular, Menlo, monospace; fill: #FFFFFF; letter-spacing: 0.02em; }
+      .t   { font: 700 20px -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif; fill: #FFFFFF; }
+      .s   { font: 400 18px -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif; fill: #CABAC0; }
+      .lbl { font: 400 18px -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif; fill: #CABAC0; }
+      .ln  { stroke: #E0004C; stroke-width: 2; stroke-dasharray: 6 4; fill: none; }
+      .ar  { fill: #E0004C; }
       @media (prefers-color-scheme: light) {
-        :root {
-          --bg-color: #F8F5F6;
-          --panel-bg: #FFFFFF;
-          --border-color: #E0D5D8;
-          --text-main: #1F0A11;
-          --text-muted: #6E5B61;
-          --teal-accent: #004D71;
-          --crimson-hot: #C50043;
-          --green-level: #3A8C00;
-          --violet-aux: #800086;
-          --line-color: #C50043;
-        }
+        .bg  { fill: #F8F5F6; }
+        .box { fill: #FFFFFF; stroke: #E0D5D8; }
+        .hcrim  { fill: #C50043; }
+        .hviolet{ fill: #800086; }
+        .ttl, .t { fill: #1F0A11; }
+        .kick, .s, .lbl { fill: #6E5B61; }
+        .ln  { stroke: #C50043; }
+        .ar  { fill: #C50043; }
       }
-
-      .bg { fill: var(--bg-color); }
-      .box { fill: var(--panel-bg); stroke: var(--border-color); stroke-width: 1.5; rx: 10px; }
-      .node-title { font-family: 'Hanken Grotesk', sans-serif; font-weight: 700; font-size: 16px; fill: var(--text-main); }
-      .node-sub { font-family: 'IBM Plex Mono', monospace; font-size: 12px; fill: var(--text-muted); }
-      .conn-line { stroke: var(--line-color); stroke-width: 2; stroke-dasharray: 6 4; }
-      .arrow { fill: var(--line-color); }
     </style>
   </defs>
 
-  <!-- Outer Canvas -->
-  <rect width="1200" height="480" rx="16" class="bg" />
+  <rect width="1200" height="940" rx="16" class="bg"/>
 
-  <!-- Title -->
-  <text x="60" y="50" font-family="Hanken Grotesk" font-weight="700" font-size="28" fill="var(--text-main)">System Architecture &amp; Execution Topology</text>
-  <text x="60" y="74" font-family="IBM Plex Mono" font-size="12" fill="var(--text-muted)" letter-spacing="0.1em">TEXT-TO-SONG PIPELINE · INFERENCE WORKER · PERSISTENCE · AI ASSISTANT</text>
-
-  <!-- Node 1: Browser UI -->
-  <g transform="translate(60, 120)">
-    <rect width="220" height="150" class="box" />
-    <rect x="0" y="0" width="220" height="32" rx="10" fill="var(--teal-accent)" />
-    <text x="110" y="21" font-family="IBM Plex Mono" font-size="12" fill="#FFF" font-weight="600" text-anchor="middle">1. BROWSER UI</text>
-    <text x="20" y="62" class="node-title">Go Templates + htmx</text>
-    <text x="20" y="85" class="node-sub">Alpine.js Client State</text>
-    <text x="20" y="105" class="node-sub">htmx Fragment Poll</text>
-    <text x="20" y="125" class="node-sub">Local Timezone Render</text>
+  <g id="title-block">
+    <text x="48" y="62" class="ttl">System Architecture &amp; Execution Topology</text>
+    <text x="48" y="92" class="kick">TEXT-TO-SONG PIPELINE · INFERENCE · PERSISTENCE · OFF-HOST BACKUP</text>
   </g>
 
-  <!-- Node 2: Go Web Server (mm3-app) -->
-  <g transform="translate(350, 120)">
-    <rect width="250" height="150" class="box" stroke="var(--crimson-hot)" stroke-width="2.5" />
-    <rect x="0" y="0" width="250" height="32" rx="10" fill="var(--crimson-hot)" />
-    <text x="125" y="21" font-family="IBM Plex Mono" font-size="12" fill="#FFF" font-weight="600" text-anchor="middle">2. GO SERVER (mm3-app)</text>
-    <text x="20" y="62" class="node-title">cmd/server &amp; handlers</text>
-    <text x="20" y="85" class="node-sub">Infisical Secret Inject</text>
-    <text x="20" y="105" class="node-sub">Background Worker</text>
-    <text x="20" y="125" class="node-sub">Rate Limiters (IP/Global)</text>
+  <!-- Request path -->
+  <g id="browser" transform="translate(48 124)">
+    <rect width="250" height="294" rx="10" class="box"/>
+    <path d="M0 36 V10 a10 10 0 0 1 10 -10 H240 a10 10 0 0 1 10 10 V36 Z" class="hteal"/>
+    <text x="20" y="24" class="h">1  BROWSER UI</text>
+    <text x="20" y="74" class="t">Go templates + htmx</text>
+    <text x="20" y="108" class="s">Engine chosen per song</text>
+    <text x="20" y="142" class="s">Alpine.js client state</text>
+    <text x="20" y="176" class="s">htmx fragment polling</text>
+    <text x="20" y="210" class="s">Assistant + style editor</text>
   </g>
-
-  <!-- Node 3: Storage (/data) -->
-  <g transform="translate(350, 310)">
-    <rect width="250" height="130" class="box" />
-    <rect x="0" y="0" width="250" height="28" rx="10" fill="var(--green-level)" />
-    <text x="125" y="19" font-family="IBM Plex Mono" font-size="11" fill="#FFF" font-weight="600" text-anchor="middle">3. PERSISTENT DISK (/data)</text>
-    <text x="20" y="55" class="node-title">SQLite WAL (mm3.db)</text>
-    <text x="20" y="78" class="node-sub">jobs &amp; songs Tables</text>
-    <text x="20" y="98" class="node-sub">/data/audio/*.m4a Files</text>
+  <g id="server" transform="translate(358 124)">
+    <rect width="310" height="294" rx="10" class="box" style="stroke:#E0004C;stroke-width:2.5"/>
+    <path d="M0 36 V10 a10 10 0 0 1 10 -10 H300 a10 10 0 0 1 10 10 V36 Z" class="hcrim"/>
+    <text x="20" y="24" class="h">2  GO SERVER · mm3-app</text>
+    <text x="20" y="74" class="t">cmd/server &amp; handlers</text>
+    <text x="20" y="108" class="s">Infisical secret inject</text>
+    <text x="20" y="142" class="s">Background worker + janitor</text>
+    <text x="20" y="176" class="s">Rate limits (IP / global)</text>
+    <text x="20" y="210" class="s">Signed cover links</text>
+    <text x="20" y="244" class="s">Waits for restore to finish</text>
   </g>
-
-  <!-- Node 4: OmniRoute LLM Proxy -->
-  <g transform="translate(680, 120)">
-    <rect width="220" height="150" class="box" />
-    <rect x="0" y="0" width="220" height="32" rx="10" fill="var(--violet-aux)" />
-    <text x="110" y="21" font-family="IBM Plex Mono" font-size="12" fill="#FFF" font-weight="600" text-anchor="middle">4. OMNIROUTE LLM</text>
-    <text x="20" y="62" class="node-title">POST /v1/chat/completions</text>
-    <text x="20" y="85" class="node-sub">thinking: disabled</text>
-    <text x="20" y="105" class="node-sub">reasoning_effort: none</text>
-    <text x="20" y="125" class="node-sub">max_tokens: 8000</text>
+  <g id="omniroute" transform="translate(728 124)">
+    <rect width="424" height="106" rx="10" class="box"/>
+    <path d="M0 36 V10 a10 10 0 0 1 10 -10 H414 a10 10 0 0 1 10 10 V36 Z" class="hviolet"/>
+    <text x="20" y="24" class="h">4  OMNIROUTE LLM</text>
+    <text x="20" y="66" class="t">POST /v1/chat/completions</text>
+    <text x="20" y="94" class="s">thinking: disabled · effort: none</text>
   </g>
-
-  <!-- Node 5: RunPod Serverless GPU -->
-  <g transform="translate(940, 120)">
-    <rect width="200" height="150" class="box" />
-    <rect x="0" y="0" width="200" height="32" rx="10" fill="var(--crimson-hot)" />
-    <text x="100" y="21" font-family="IBM Plex Mono" font-size="12" fill="#FFF" font-weight="600" text-anchor="middle">5. RUNPOD GPU</text>
-    <text x="15" y="62" class="node-title">MiniMax Music 3</text>
-    <text x="15" y="85" class="node-sub">POST /runsync</text>
-    <text x="15" y="105" class="node-sub">WAV → M4A (ffmpeg)</text>
-    <text x="15" y="125" class="node-sub">S3 / Base64 Output</text>
+  <g id="runpod" transform="translate(728 246)">
+    <rect width="424" height="172" rx="10" class="box"/>
+    <path d="M0 36 V10 a10 10 0 0 1 10 -10 H414 a10 10 0 0 1 10 10 V36 Z" class="hcrim"/>
+    <text x="20" y="24" class="h">5  RUNPOD GPU · two engines</text>
+    <text x="20" y="66" class="t">POST /run · poll /status/{id}</text>
+    <text x="20" y="94" class="s">MiniMax Music 3 · create</text>
+    <text x="20" y="122" class="s">YuE2 · create, cover, edit</text>
+    <text x="20" y="150" class="s">YuE2 shown only if endpoint set</text>
   </g>
-
+  <!-- Persistence and backup -->
+  <g id="data" transform="translate(48 462)">
+    <rect width="1104" height="106" rx="10" class="box"/>
+    <path d="M0 36 V10 a10 10 0 0 1 10 -10 H1094 a10 10 0 0 1 10 10 V36 Z" class="hgreen"/>
+    <text x="20" y="24" class="h">3  DATA VOLUME · /data</text>
+    <text x="24" y="66" class="t">mm3.db</text>
+    <text x="24" y="94" class="s">SQLite WAL · users, jobs, songs</text>
+    <text x="400" y="66" class="t">audio/*.m4a</text>
+    <text x="400" y="94" class="s">generated songs, 192 kbps</text>
+    <text x="776" y="66" class="t">sources/</text>
+    <text x="776" y="94" class="s">staged cover uploads</text>
+  </g>
+  <g id="restore" transform="translate(48 612)">
+    <rect width="352" height="134" rx="10" class="box"/>
+    <path d="M0 36 V10 a10 10 0 0 1 10 -10 H342 a10 10 0 0 1 10 10 V36 Z" class="hteal"/>
+    <text x="20" y="24" class="h">6  RESTORE</text>
+    <text x="20" y="66" class="t">mm3-restore · runs first</text>
+    <text x="20" y="94" class="s">Empty /data refilled from bucket</text>
+    <text x="20" y="122" class="s">Fails closed; app waits for it</text>
+  </g>
+  <g id="litestream" transform="translate(424 612)">
+    <rect width="352" height="134" rx="10" class="box"/>
+    <path d="M0 36 V10 a10 10 0 0 1 10 -10 H342 a10 10 0 0 1 10 10 V36 Z" class="hteal"/>
+    <text x="20" y="24" class="h">7  LITESTREAM</text>
+    <text x="20" y="66" class="t">mm3-litestream</text>
+    <text x="20" y="94" class="s">Streams mm3.db WAL continuously</text>
+    <text x="20" y="122" class="s">Snapshot every 6 h, kept 7 days</text>
+  </g>
+  <g id="files-sync" transform="translate(800 612)">
+    <rect width="352" height="134" rx="10" class="box"/>
+    <path d="M0 36 V10 a10 10 0 0 1 10 -10 H342 a10 10 0 0 1 10 10 V36 Z" class="hteal"/>
+    <text x="20" y="24" class="h">8  FILES-SYNC</text>
+    <text x="20" y="66" class="t">mm3-files-sync</text>
+    <text x="20" y="94" class="s">rclone copy every 15 min</text>
+    <text x="20" y="122" class="s">Never sync: can't delete backup</text>
+  </g>
+  <g id="bucket" transform="translate(48 790)">
+    <rect width="1104" height="106" rx="10" class="box" style="stroke-dasharray:8 5"/>
+    <path d="M0 36 V10 a10 10 0 0 1 10 -10 H1094 a10 10 0 0 1 10 10 V36 Z" class="hviolet"/>
+    <text x="20" y="24" class="h">9  BUCKET · S3 API · off-host</text>
+    <text x="24" y="66" class="t">S3-compatible</text>
+    <text x="24" y="94" class="s">off-host, its own scoped key</text>
+    <text x="400" y="66" class="t">mm3/db</text>
+    <text x="400" y="94" class="s">replica · snapshots kept 7 days</text>
+    <text x="776" y="66" class="t">mm3/files</text>
+    <text x="776" y="94" class="s">audio + uploads · copy only</text>
+  </g>
   <!-- Connections -->
-  <!-- 1 -> 2 -->
-  <line x1="280" y1="195" x2="350" y2="195" class="conn-line" />
-  <polygon points="350,195 342,190 342,200" class="arrow" />
-
-  <!-- 2 -> 3 -->
-  <line x1="475" y1="270" x2="475" y2="310" class="conn-line" />
-  <polygon points="475,310 470,302 480,302" class="arrow" />
-
-  <!-- 2 -> 4 -->
-  <line x1="600" y1="170" x2="680" y2="170" class="conn-line" />
-  <polygon points="680,170 672,165 672,175" class="arrow" />
-
-  <!-- 2 -> 5 (routed around OmniRoute LLM) -->
-  <path d="M 600,220 H 635 Q 645,220 645,230 V 290 Q 645,300 655,300 H 910 Q 920,300 920,290 V 230 Q 920,220 930,220 H 940" class="conn-line" fill="none" />
-  <polygon points="940,220 932,215 932,225" class="arrow" />
-
+  <line x1="298" y1="271" x2="350" y2="271" class="ln"/>
+  <polygon points="358,271 348,265 348,277" class="ar"/>
+  <line x1="668" y1="177" x2="720" y2="177" class="ln"/>
+  <polygon points="728,177 718,171 718,183" class="ar"/>
+  <line x1="668" y1="332" x2="720" y2="332" class="ln"/>
+  <polygon points="728,332 718,326 718,338" class="ar"/>
+  <line x1="513" y1="418" x2="513" y2="454" class="ln"/>
+  <polygon points="513,462 507,452 519,452" class="ar"/>
+  <text x="527" y="446" class="lbl">SQL + audio files</text>
+  <line x1="224" y1="612" x2="224" y2="576" class="ln"/>
+  <polygon points="224,568 218,578 230,578" class="ar"/>
+  <text x="238" y="596" class="lbl">refills an empty volume</text>
+  <line x1="600" y1="568" x2="600" y2="604" class="ln"/>
+  <polygon points="600,612 594,602 606,602" class="ar"/>
+  <text x="614" y="596" class="lbl">WAL, continuously</text>
+  <line x1="976" y1="568" x2="976" y2="604" class="ln"/>
+  <polygon points="976,612 970,602 982,602" class="ar"/>
+  <text x="990" y="596" class="lbl">audio + uploads</text>
+  <line x1="224" y1="790" x2="224" y2="754" class="ln"/>
+  <polygon points="224,746 218,756 230,756" class="ar"/>
+  <text x="238" y="774" class="lbl">reads db + files</text>
+  <line x1="600" y1="746" x2="600" y2="782" class="ln"/>
+  <polygon points="600,790 594,780 606,780" class="ar"/>
+  <text x="614" y="774" class="lbl">→ mm3/db</text>
+  <line x1="976" y1="746" x2="976" y2="782" class="ln"/>
+  <polygon points="976,790 970,780 982,780" class="ar"/>
+  <text x="990" y="774" class="lbl">→ mm3/files</text>
 </svg>

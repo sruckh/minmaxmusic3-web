@@ -54,3 +54,35 @@ else
 	echo "up.sh:   Until they are, nobody can approve a registration." >&2
 	echo "up.sh:   See README.md § Authentication & Administration." >&2
 fi
+
+# Off-host replication is the only copy of the data that survives a lost
+# volume, and nothing else says so when it is not working: the app is healthy
+# either way. The first pass must reach the bucket within a minute of start.
+# Only log lines and a marker file are read — the replica credentials live in
+# the entrypoint's environment and are not visible to `docker exec`.
+i=0
+until docker logs mm3-litestream 2>&1 | grep -q 'compaction complete'; do
+	i=$((i + 1))
+	[ "$i" -ge 60 ] && break
+	sleep 1
+done
+if docker logs mm3-litestream 2>&1 | grep -q 'compaction complete' \
+	&& ! docker logs mm3-litestream 2>&1 | grep -q 'level=ERROR'; then
+	echo "up.sh: database replication to the bucket is running" >&2
+else
+	echo "up.sh: WARNING — database replication is NOT confirmed." >&2
+	echo "up.sh:   Check MM3_LS_* in Infisical (env ${INFISICAL_ENV:-dev}), then:" >&2
+	echo "up.sh:   docker logs mm3-litestream --tail 30" >&2
+fi
+i=0
+until docker exec mm3-files-sync test -f /tmp/files-sync.ok 2>/dev/null; do
+	i=$((i + 1))
+	[ "$i" -ge 60 ] && break
+	sleep 1
+done
+if docker exec mm3-files-sync test -f /tmp/files-sync.ok 2>/dev/null; then
+	echo "up.sh: audio/uploads sync to the bucket completed a pass" >&2
+else
+	echo "up.sh: WARNING — audio/uploads sync has not completed a pass." >&2
+	echo "up.sh:   docker logs mm3-files-sync --tail 30" >&2
+fi

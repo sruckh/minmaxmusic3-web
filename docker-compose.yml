@@ -1,6 +1,63 @@
 name: mm3
 
+# The restore, litestream and files-sync services differ only in `command`.
+# They authenticate to Infisical exactly as the app does; the replica
+# credentials (MM3_LS_BUCKET, MM3_LS_ENDPOINT, MM3_LS_REGION, MM3_LS_KEY_ID,
+# MM3_LS_APP_KEY) arrive only via infisical run, never from here.
+x-backup: &backup
+  image: mm3-backup:latest
+  networks:
+    - shared_net
+  environment:
+    INFISICAL_DOMAIN: ${INFISICAL_HOST:-}
+    INFISICAL_PROJECT_ID: ${INFISICAL_PROJECT_ID:-}
+    INFISICAL_ENV: ${INFISICAL_ENV:-dev}
+    INFISICAL_CLIENT_ID: ${INFISICAL_CLIENT_ID:-}
+    INFISICAL_CLIENT_SECRET_FILE: /run/secrets/infisical_client_secret
+  secrets:
+    - infisical_client_secret
+  volumes:
+    - data:/data
+
 services:
+  # Runs to completion before anything else touches /data. Restores the
+  # database and audio from the off-host replica when the volume is empty, and
+  # does nothing when it is not. If the replica cannot be read it exits
+  # non-zero and the app never starts — see docker/restore.sh.
+  restore:
+    <<: *backup
+    build:
+      context: .
+      target: backup
+    container_name: mm3-restore
+    restart: "no"
+    command: ["/usr/local/bin/restore.sh"]
+
+  # Continuous replication of /data/mm3.db (docker/litestream.yml).
+  litestream:
+    <<: *backup
+    container_name: mm3-litestream
+    restart: unless-stopped
+    command: ["litestream", "replicate", "-config", "/etc/litestream.yml"]
+    depends_on:
+      restore:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:9090/metrics"]
+      interval: 30s
+      timeout: 3s
+      start_period: 15s
+
+  # Audio and uploads, every MM3_FILES_SYNC_INTERVAL seconds (default 900).
+  files-sync:
+    <<: *backup
+    container_name: mm3-files-sync
+    restart: unless-stopped
+    command: ["/usr/local/bin/files-sync.sh"]
+    depends_on:
+      restore:
+        condition: service_completed_successfully
+
   app:
     build:
       context: .
@@ -38,6 +95,11 @@ services:
       #   LLM_BASE_URL, LLM_API_KEY, LLM_MODEL_ID   — assistant
       #   RUNPOD_ENDPOINT, RUNPOD_API_KEY           — inference
       #   ADMIN_USER, ADMIN_PASSWORD                — administrator sign-in
+      #   MM3_LS_BUCKET, MM3_LS_ENDPOINT, MM3_LS_REGION,
+      #   MM3_LS_KEY_ID, MM3_LS_APP_KEY             — off-host backup
+      #
+      # The MM3_LS_* set is the opposite of the admin pair: without it the
+      # `restore` service exits non-zero and nothing starts, the app included.
       #
       # ADMIN_USER and ADMIN_PASSWORD are the dangerous omission. Missing
       # RUNPOD_*/LLM_* fails loudly the first time someone generates; missing
@@ -59,6 +121,11 @@ services:
       - infisical_client_secret
     volumes:
       - data:/data
+    # Never start on an unrestored volume. restore exits 0 when there is
+    # nothing to restore, so this only blocks on a real failure.
+    depends_on:
+      restore:
+        condition: service_completed_successfully
 
   # Toolchain image for running the suite: docker compose run --rm test
   test:

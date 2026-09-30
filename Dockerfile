@@ -41,6 +41,26 @@ COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod 0755 /usr/local/bin/entrypoint.sh
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 
+# --- Litestream and rclone, pinned by immutable digest -------------------
+# Same rule as the Infisical CLI: copy the binary from the vendor image, no
+# curl|sh at build time. litestream v0.5.17, rclone v1.68.2; both are static
+# Go binaries and run on alpine. Digests verified 2026-09-29.
+FROM litestream/litestream@sha256:4b02b9859a6b6b4087d8b8944e15f7e984bd7957cba322bbeee38b0e27b9656a AS litestream-bin
+FROM rclone/rclone@sha256:74c51b8817e5431bd6d7ed27cb2a50d8ee78d77f6807b72a41ef6f898845942b AS rclone-bin
+
+# --- backup: one image for the restore, litestream and files-sync services -
+# Runs as the same mm3 user as the app (identical addgroup/adduser line, so the
+# same uid/gid) so it can read and write the shared /data volume.
+FROM secretbase AS backup
+RUN addgroup -S mm3 && adduser -S mm3 -G mm3 && mkdir -p /data && chown -R mm3:mm3 /data
+COPY --from=litestream-bin /usr/local/bin/litestream /usr/local/bin/litestream
+COPY --from=rclone-bin /usr/local/bin/rclone /usr/local/bin/rclone
+COPY docker/litestream.yml /etc/litestream.yml
+COPY docker/rclone-env.sh docker/restore.sh docker/files-sync.sh /usr/local/bin/
+RUN chmod 0755 /usr/local/bin/restore.sh /usr/local/bin/files-sync.sh
+USER mm3
+VOLUME /data
+
 # --- runtime --------------------------------------------------------------
 FROM secretbase AS runtime
 WORKDIR /app
