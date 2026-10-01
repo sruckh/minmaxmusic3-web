@@ -27,6 +27,8 @@ const (
 func (s *Server) registerFeatures(rt *router) {
 	s.genLimiter = newLimiter(genLimitPerHour, time.Hour)
 	s.assistLimiter = newLimiter(assistLimitPerDay, 24*time.Hour)
+	s.lyricsLimiter = newLimiter(20, 24*time.Hour)
+	rt.handleFunc("POST /lyrics/lookup", s.handleLyricsLookup)
 
 	rt.handleFunc("POST /assistant", s.handleAssistant)
 	rt.handleFunc("POST /assistant/style", s.handleStyleAssistant)
@@ -280,11 +282,25 @@ const maxIdea = 4000
 // handleCreateJob validates the form and enqueues a job; returns the job
 // fragment (htmx swap) in well under a second — no RunPod in this path.
 func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
+	defer removeMultipart(r)
+	if err := parseCoverForm(w, r); err != nil {
+		s.formError(w, err)
 		return
 	}
 	if !s.genAllowed(w, r, s.genLimiter, "generation") {
+		return
+	}
+	switch r.FormValue("mode") {
+	case "cover":
+		if r.FormValue("engine") != store.EngineYue2 || !s.cfg.Yue2Enabled() {
+			s.renderJobError(w, http.StatusBadRequest, "Select an available YuE2 model to make a cover.")
+			return
+		}
+		s.queueCover(w, r, nil)
+		return
+	case "", "create":
+	default:
+		s.renderJobError(w, http.StatusBadRequest, "Choose New song or Cover a recording.")
 		return
 	}
 

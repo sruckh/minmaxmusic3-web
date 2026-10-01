@@ -97,6 +97,7 @@ services:
       #
       #   LLM_BASE_URL, LLM_API_KEY, LLM_MODEL_ID   — assistant
       #   RUNPOD_ENDPOINT, RUNPOD_API_KEY           — inference
+      #   MM3_ACOUSTID_API_KEY                     — optional lyrics lookup
       #   ADMIN_USER, ADMIN_PASSWORD                — administrator sign-in
       #   MM3_LS_BUCKET, MM3_LS_ENDPOINT, MM3_LS_REGION,
       #   MM3_LS_KEY_ID, MM3_LS_APP_KEY             — off-host backup

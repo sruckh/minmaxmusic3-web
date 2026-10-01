@@ -1,0 +1,39 @@
+{{if .Yue2Enabled}}
+<fieldset class="field-group" x-show="engine === 'yue2'" x-cloak style="border:0; padding:0;">
+  <legend class="field-label">What to generate</legend>
+  <div style="display:flex; gap:16px; flex-wrap:wrap; margin-top:8px;">
+    <label><input type="radio" name="mode" value="create" x-model="mode" :disabled="engine !== 'yue2'" style="width:auto;"> New song</label>
+    <label><input type="radio" name="mode" value="cover" x-model="mode" :disabled="engine !== 'yue2'" style="width:auto;"> Cover a recording</label>
+  </div>
+</fieldset>
+<div x-show="isCover" x-cloak>
+  <div class="field-group">
+    <label for="source-upload" class="field-label">Recording</label>
+    <input id="source-upload" x-ref="sourceUpload" type="file" name="source_upload" accept="audio/*" class="input"
+           :required="isCover" :disabled="!isCover" @change="recordingChanged($event.target.files[0])" aria-describedby="recording-help">
+    <p class="help" id="recording-help">Upload audio under 64 MB. Choose the new style below; YuE2 keeps the recording's melody, tempo and key.</p>
+    <p class="help" x-show="!sourceFile">Choose a recording to continue. Files are not saved in your browser draft.</p>
+  </div>
+  <div class="field-group">
+    <label for="find-lyrics"><input id="find-lyrics" type="checkbox" x-model="findLyrics" :disabled="!isCover || !lookupAvailable"
+           @change="lookupPreferenceChanged()" style="width:auto;"> Find lyrics for this recording</label>
+    <p class="help">Identification runs locally. Only a fingerprint and duration go to AcoustID; recording IDs and metadata go to MusicBrainz and LRCLIB. These services do not receive your audio.</p>
+    <p class="help" x-show="!lookupAvailable">Lyrics lookup is not configured on this server. You can still supply words or let YuE2 transcribe the recording.</p>
+    <p class="help" role="status" aria-live="polite" x-text="lookupMessage"></p>
+    <div style="display:flex; gap:8px; flex-wrap:wrap;">
+      <button type="button" class="btn btn--ghost" x-show="lookingUp" @click="cancelLyricsLookup()">Cancel lookup</button>
+      <button type="button" class="btn btn--ghost" x-show="findLyrics && sourceFile && !lookingUp && lookupAvailable" @click="lookupLyrics()">Find lyrics again</button>
+    </div>
+    <div class="field-group" x-show="lyricCandidates.length">
+      <label for="lyrics-match" class="field-label">Recording match</label>
+      <select id="lyrics-match" class="input" x-model="lyricChoice" @change="describeLyricsMatch()">
+        <template x-for="(match, i) in lyricCandidates" :key="i">
+          <option :value="String(i)" x-text="matchLabel(match)"></option>
+        </template>
+      </select>
+      <p class="help">Matches are suggestions, not proof. Review the words before generating. Lyrics supplied by LRCLIB.</p>
+      <button type="button" class="btn btn--secondary" :disabled="!selectedLyrics()" @click="useFoundLyrics()">Use these lyrics</button>
+    </div>
+  </div>
+</div>
+{{end}}

@@ -40,6 +40,7 @@ type Config struct {
 	// 403 for it while continuing to work for the other. The probe that
 	// established this is recorded in stage 09. Set this only if the shared
 	// key cannot be granted the endpoint; see Yue2Key.
+	AcoustIDAPIKey     string // optional: opt-in lyrics lookup; never logged
 	Yue2APIKey         string
 	LLMBaseURL         string
 	LLMAPIKey          string
@@ -108,6 +109,7 @@ func Load() (*Config, error) {
 		RunPodAPIKey:       os.Getenv("RUNPOD_API_KEY"),
 		Yue2Endpoint:       os.Getenv("YUE2_RUNPOD_ENDPOINT"),
 		Yue2APIKey:         os.Getenv("YUE2_RUNPOD_API_KEY"),
+		AcoustIDAPIKey:     os.Getenv("MM3_ACOUSTID_API_KEY"),
 		LLMBaseURL:         os.Getenv("LLM_BASE_URL"),
 		LLMAPIKey:          os.Getenv("LLM_API_KEY"),
 		LLMModelID:         os.Getenv("LLM_MODEL_ID"),
@@ -137,13 +139,13 @@ func Load() (*Config, error) {
 // Summary returns a loggable one-line status: values for non-secrets,
 // presence flags for secrets.
 func (c *Config) Summary() string {
-	return fmt.Sprintf("addr=%s client_ip_header=%s web=%s db=%s audio=%s in_flight=%d runpod_endpoint=%s runpod_key=%t yue2_endpoint=%s yue2_enabled=%t yue2_own_key=%t llm_base=%s llm_model=%s llm_key=%t llm_thinking=%s llm_reasoning_effort=%s admin_user=%s admin_password=%t admin_login=%t",
+	return fmt.Sprintf("addr=%s client_ip_header=%s web=%s db=%s audio=%s in_flight=%d runpod_endpoint=%s runpod_key=%t yue2_endpoint=%s yue2_enabled=%t yue2_own_key=%t llm_base=%s llm_model=%s llm_key=%t llm_thinking=%s llm_reasoning_effort=%s admin_user=%s admin_password=%t admin_login=%t acoustid_key=%t",
 		c.Addr, present(c.ClientIPHeader), c.WebDir, c.DBPath, c.AudioDir, c.MaxInFlight,
 		present(c.RunPodEndpoint), c.RunPodAPIKey != "",
 		present(c.Yue2Endpoint), c.Yue2Enabled(), c.Yue2APIKey != "",
 		present(c.LLMBaseURL), present(c.LLMModelID), c.LLMAPIKey != "",
 		c.LLMThinking, c.LLMReasoningEffort,
-		present(c.AdminUser), c.AdminPassword != "", c.AdminLoginEnabled(),
+		present(c.AdminUser), c.AdminPassword != "", c.AdminLoginEnabled(), c.AcoustIDAPIKey != "",
 	)
 }
 

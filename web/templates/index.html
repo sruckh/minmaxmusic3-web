@@ -5,12 +5,13 @@
 <!-- Both engines' tag lists, so switching engine re-renders the row without a
      round trip. Declared before the component so it is defined by the time
      Alpine walks the tree. -->
-<script>window.MM3_TAGS = {{.TagsJSON}};</script>
+<script>window.MM3_TAGS = {{.TagsJSON}}; window.MM3_YUE2_ENABLED = {{.Yue2Enabled}}; window.MM3_LYRICS_ENABLED = {{.LyricsEnabled}};</script>
+<script src="/static/lyrics.js"></script>
 <div class="shell" x-data="mm3Page()">
   {{template "nav" .}}
 
   <!-- Generation Form & Vertical Stack Accordion Layout -->
-  <form id="gen" hx-post="/jobs" hx-target="#job" hx-swap="innerHTML">
+  <form id="gen" hx-post="/jobs" hx-target="#job" hx-swap="innerHTML" hx-encoding="multipart/form-data">
     <main class="vertical-stack">
 
       <!-- SECTION 1: ENGINE. First, because it decides what the rest of the
@@ -35,11 +36,12 @@
               Sings your tagged lyrics at a length you choose. The style caption is a
               structured description — metadata, vocal character, arrangement.
             </p>
-            <p class="help" x-show="engine === 'yue2'" x-cloak>
+            <p class="help" x-show="engine === 'yue2' && !isCover" x-cloak>
               Plans the song as a score before writing any audio, and sets its own
               length. The style is a single line, and the section tags it reads are a
               narrower set.
             </p>
+            {{template "cover-inputs.html" .}}
           </div>
         </div>
       </section>
@@ -123,7 +125,8 @@
           </div>
 
           <div class="field-group">
-            <label for="input" class="field-label">Lyrics Prompt</label>
+            <label for="input" class="field-label" x-text="isCover ? 'Lyrics — optional' : 'Lyrics Prompt'">Lyrics Prompt</label>
+            <p class="help" x-show="isCover" x-cloak>Leave blank to transcribe the recording, or review and edit the words found above.</p>
             <textarea id="input" name="input" rows="12" class="input-lyrics" x-model="lyrics"
               placeholder="[Intro]&#10;Morning light filtering through the pine&#10;&#10;[Chorus]&#10;Softly the world begins to breathe"></textarea>
             <div class="charcount"><span x-text="lyrics.length">0</span> chars</div>
@@ -171,7 +174,7 @@
                  Instead the model's own choices are shown back on the song,
                  read from the score it wrote. See scoreMetaOf in
                  internal/server/handlers.go. -->
-            <p class="help" x-show="engine === 'yue2'" x-cloak style="margin-top:6px;">
+            <p class="help" x-show="engine === 'yue2' && !isCover" x-cloak style="margin-top:6px;">
               YuE2 chooses the key, meter and tempo itself when it plans the score.
               They appear on the finished song, read from the score it wrote.
             </p>
@@ -225,7 +228,7 @@
 
             <!-- Length, explained rather than merely absent (YuE2 only). Sits
                  where the slider would be, so the two swap in place. -->
-            <div class="rack-row" style="flex-direction:column; align-items:stretch;" x-show="engine === 'yue2'" x-cloak>
+            <div class="rack-row" style="flex-direction:column; align-items:stretch;" x-show="engine === 'yue2' && !isCover" x-cloak>
               <span class="field-label">Length</span>
               <p style="font-size:0.8rem; color:var(--text-secondary); margin:6px 0 0 0;">
                 YuE2 sets the length itself — it follows from your lyrics and the
@@ -248,13 +251,22 @@
 
             <!-- COT — YuE2 only. The assistant prefills it; the user can always
                  override, because the choice visibly changes the output. -->
-            <div class="rack-row" style="flex-direction:column; align-items:stretch;" x-show="engine === 'yue2'" x-cloak>
+            <div class="rack-row" style="flex-direction:column; align-items:stretch;" x-show="engine === 'yue2' && !isCover" x-cloak>
               <span class="field-label">Planning</span>
-              <select id="cot" name="cot" x-model="cot" style="margin-top:6px;">
+              <select id="cot" name="cot" x-model="cot" :disabled="isCover || engine !== 'yue2'" style="margin-top:6px;">
                 <option value="">Auto — engine default (full)</option>
                 <option value="full">Full — plan melody and chords first</option>
                 <option value="melody">Melody — keep the melody, change the rest</option>
                 <option value="off">Off — quick draft, less editable</option>
+              </select>
+            </div>
+
+            <div class="rack-row" x-show="isCover" x-cloak>
+              <label class="field-label" for="generate-strength">Style strength</label>
+              <select id="generate-strength" name="style_strength" x-model="styleStrength" :disabled="!isCover">
+                <option value="off">Off — closest to the recording</option>
+                <option value="balanced">Balanced — new style, clearer words</option>
+                <option value="strong">Strong — more style, may slur words</option>
               </select>
             </div>
 
@@ -285,16 +297,16 @@
                  the worker fills the lyric slot with a wordless tag; the flag is
                  what asks for that. It cannot travel with lyrics, so ticking it
                  clears the box rather than letting the worker reject the pair. -->
-            <div class="rack-row toggle-row" x-show="engine === 'yue2'" x-cloak>
+            <div class="rack-row toggle-row" x-show="engine === 'yue2' && !isCover" x-cloak>
               <span class="field-label">Instrumental</span>
               <div style="display:flex;align-items:center;">
-                <input type="checkbox" id="instrumental" name="instrumental" x-model="instrumental"
+                <input type="checkbox" id="instrumental" name="instrumental" x-model="instrumental" :disabled="isCover || engine !== 'yue2'"
                        @change="instrumental && (lyrics = '')" style="width:auto;">
                 <label for="instrumental" class="toggle-label" style="margin-left:8px; cursor:pointer;"
                        x-text="instrumental ? 'No vocals' : 'Vocal'">Vocal</label>
               </div>
             </div>
-            <p class="help" x-show="engine === 'yue2' && instrumental" x-cloak
+            <p class="help" x-show="engine === 'yue2' && !isCover && instrumental" x-cloak
                style="margin-top:-6px; margin-bottom:12px;">
               YuE2 has no instrumental mode — it will be asked to sing a wordless
               section instead. Whether the result actually has no vocals is not
@@ -316,9 +328,9 @@
              generation on MiniMax, which has no instrumental path, but not on
              YuE2. The style caption is required either way: it is what names
              the music. -->
-        <button type="submit" class="generate-btn" id="generate" :disabled="!caption.trim() || (engine !== 'yue2' && !lyrics.trim())">
+        <button type="submit" class="generate-btn" id="generate" :disabled="lookingUp || (isCover && !sourceFile) || !caption.trim() || (engine !== 'yue2' && !lyrics.trim())">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 4l14 8-14 8V4z" fill="currentColor" stroke="none"/></svg>
-          <span id="generate-label">Generate</span>
+          <span id="generate-label" x-text="isCover ? 'Generate cover' : 'Generate'">Generate</span>
         </button>
 
         <div class="status-line" role="status" aria-live="polite">
@@ -353,6 +365,8 @@ function insertTag(btn) {
 function mm3Page() {
   return {
     ...mm3Defaults(),
+    ...mm3Cover(),
+    get isCover() { return this.engine === 'yue2' && this.mode === 'cover'; },
     showAssistant: false, thinking: false, error: '',
     openEngine: true, openLyrics: true, openConfig: true,
     saveTimer: null,
@@ -391,12 +405,17 @@ function mm3Page() {
 
     init() {
       this.restore();
+      this.$watch('engine', () => {
+        this.resetRecording();
+        if (this.engine !== 'yue2') this.mode = 'create';
+      });
+      this.$watch('mode', () => this.resetRecording());
       MM3_DRAFT_FIELDS.forEach(f => this.$watch(f, () => this.save()));
     },
 
     // True when anything on the form differs from a fresh page.
     get dirty() {
-      return mm3DraftIsDirty(this);
+      return mm3DraftIsDirty(this) || !!this.sourceFile;
     },
 
     restore() {
@@ -404,6 +423,8 @@ function mm3Page() {
       if (!saved) return;
       MM3_DRAFT_FIELDS.forEach(f => { if (saved[f] !== undefined) this[f] = saved[f]; });
       this.dur = mm3ClampDur(this.dur);
+      if (this.engine !== 'yue2' || !window.MM3_YUE2_ENABLED) this.engine = 'minimax';
+      if (this.engine !== 'yue2' || this.mode !== 'cover') this.mode = 'create';
     },
 
     // Debounced: lyrics fire a watch per keystroke.
@@ -419,6 +440,7 @@ function mm3Page() {
 
     clear() {
       if (this.dirty && !confirm('Clear the lyrics, style caption and settings on this page?')) return;
+      this.resetRecording();
       Object.assign(this, mm3Defaults());
       this.error = '';
       mm3ClearDraft();

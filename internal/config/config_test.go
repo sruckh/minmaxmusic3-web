@@ -69,15 +69,16 @@ func TestSummaryReportsKeyPresenceNotValue(t *testing.T) {
 		Addr: ":8080", WebDir: "/app/web", DBPath: "/data/mm3.db", AudioDir: "/data/audio",
 		RunPodEndpoint: "https://api.runpod.ai/v2/abc", RunPodAPIKey: "shared-secret-value",
 		Yue2Endpoint: "https://api.runpod.ai/v2/def", Yue2APIKey: "scoped-secret-value",
+		AcoustIDAPIKey: "acoustid-secret-value",
 	}
 	s := c.Summary()
 
-	for _, secret := range []string{"shared-secret-value", "scoped-secret-value"} {
+	for _, secret := range []string{"shared-secret-value", "scoped-secret-value", "acoustid-secret-value"} {
 		if strings.Contains(s, secret) {
 			t.Errorf("Summary leaked a key value: %s", s)
 		}
 	}
-	for _, want := range []string{"yue2_endpoint=set", "yue2_enabled=true", "yue2_own_key=true"} {
+	for _, want := range []string{"yue2_endpoint=set", "yue2_enabled=true", "yue2_own_key=true", "acoustid_key=true"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("Summary missing %q: %s", want, s)
 		}

@@ -8,7 +8,7 @@
 # --- test: run the suite -------------------------------------------------
 FROM golang:1.26-alpine@sha256:70b46548e42db77e0966aaf3619fd068734dc6c77584d526b91126504fd95816 AS test
 WORKDIR /src
-RUN apk add --no-cache ffmpeg
+RUN apk add --no-cache ffmpeg chromaprint
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
@@ -63,6 +63,7 @@ VOLUME /data
 
 # --- runtime --------------------------------------------------------------
 FROM secretbase AS runtime
+RUN apk add --no-cache chromaprint
 WORKDIR /app
 RUN addgroup -S mm3 && adduser -S mm3 -G mm3 && mkdir -p /data && chown -R mm3:mm3 /data
 COPY --from=build --chown=mm3:mm3 /out/mm3-server /usr/local/bin/mm3-server

@@ -14,8 +14,10 @@
 package server
 
 import (
+	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"net/url"
 	"os"
@@ -164,15 +166,17 @@ func (s *Server) resolveCoverSource(r *http.Request, songID string) (string, str
 	//    so a full-length recording is not capped by the job payload.
 	if f, hdr, err := r.FormFile("source_upload"); err == nil {
 		defer f.Close()
-		if hdr.Size > maxUploadBytes {
+		if hdr.Size <= 0 || hdr.Size > maxUploadBytes {
 			return "", "", fmt.Errorf("That recording is too large — keep it under %d MB.", maxUploadBytes>>20)
 		}
 		link, err := s.stageUpload(f, hdr.Filename, s.caller(r).UserID)
 		return link, "", err
 	}
 
-	// 3. The song being viewed. This is the default, and the common case: most
-	//    covers are of something already in the library.
+	if songID == "" {
+		return "", "", fmt.Errorf("Upload a recording to make a cover.")
+	}
+	// 3. The song being viewed, when called from History.
 	link, err := s.mintCoverURL(store.CoverLinkAudio, songID)
 	if err != nil {
 		return "", "", err
@@ -193,6 +197,9 @@ func isFetchableURL(raw string) bool {
 // stageUpload stores an uploaded recording, files it under its owner, and
 // returns a link the worker can fetch it by.
 func (s *Server) stageUpload(src io.Reader, filename, userID string) (string, error) {
+	if strings.TrimSpace(s.cfg.PublicURL) == "" {
+		return "", fmt.Errorf("Cover uploads are unavailable until MM3_PUBLIC_URL is configured.")
+	}
 	name, err := s.storeUpload(src, filename)
 	if err != nil {
 		return "", err
@@ -214,11 +221,32 @@ func (s *Server) stageUpload(src io.Reader, filename, userID string) (string, er
 // not a urlencoded form, because one of the three ways to supply them is a
 // file — but a pasted URL or a library choice needs no multipart at all, so a
 // urlencoded body is also acceptable.
-func parseCoverForm(r *http.Request) error {
-	if err := r.ParseMultipartForm(maxUploadBytes); err != nil {
-		return r.ParseForm()
+func parseCoverForm(w http.ResponseWriter, r *http.Request) error {
+	// The extra MiB is for text and multipart framing, not another recording.
+	r.Body = http.MaxBytesReader(w, r.Body, maxUploadBytes+(1<<20))
+	kind, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil && r.Header.Get("Content-Type") != "" {
+		return err
 	}
-	return nil
+	if kind == "multipart/form-data" {
+		return r.ParseMultipartForm(1 << 20)
+	}
+	return r.ParseForm()
+}
+
+func removeMultipart(r *http.Request) {
+	if r.MultipartForm != nil {
+		_ = r.MultipartForm.RemoveAll()
+	}
+}
+
+func (s *Server) formError(w http.ResponseWriter, err error) {
+	var tooLarge *http.MaxBytesError
+	if errors.As(err, &tooLarge) {
+		s.renderJobError(w, http.StatusRequestEntityTooLarge, "That upload is too large — keep the recording under 64 MB.")
+		return
+	}
+	s.renderJobError(w, http.StatusBadRequest, "Could not read that form — choose the recording again and retry.")
 }
 
 // handleCoverSong queues a cover of an existing song.
@@ -227,8 +255,9 @@ func parseCoverForm(r *http.Request) error {
 // style, and optionally the words. Omit the lyrics and the worker's ASR
 // transcribes them from the recording.
 func (s *Server) handleCoverSong(w http.ResponseWriter, r *http.Request) {
-	if err := parseCoverForm(r); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
+	defer removeMultipart(r)
+	if err := parseCoverForm(w, r); err != nil {
+		s.formError(w, err)
 		return
 	}
 	src := s.sourceSong(w, r)
@@ -237,12 +266,18 @@ func (s *Server) handleCoverSong(w http.ResponseWriter, r *http.Request) {
 	}
 	// Cover is YuE2's alone. The worker's other engine has no such mode, and
 	// queuing one under it would fail at the endpoint with a schema error.
-	if src.Engine != store.EngineYue2 {
+	if src.Engine != store.EngineYue2 || !s.cfg.Yue2Enabled() {
 		s.renderJobError(w, http.StatusBadRequest,
 			"Covers need a song made with YuE2. Pick one of those, or generate a new YuE2 song first.")
 		return
 	}
 
+	s.queueCover(w, r, src)
+}
+
+// queueCover shares the cover inputs, but not the ownership check: a nil source
+// means a fresh uploaded recording, never permission to read a library song.
+func (s *Server) queueCover(w http.ResponseWriter, r *http.Request, src *store.Song) {
 	style := strings.TrimSpace(r.FormValue("instructions"))
 	if style == "" {
 		s.renderJobError(w, http.StatusBadRequest,
@@ -261,7 +296,29 @@ func (s *Server) handleCoverSong(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sourceURL, sourceSongID, err := s.resolveCoverSource(r, src.ID)
+	title := strings.TrimSpace(r.FormValue("title"))
+	seed := seedOf(r)
+	songID := ""
+	if src != nil {
+		title, seed, songID = src.Title, seedFor(r, src), src.ID
+	} else {
+		// Generate accepts uploads only. A forged URL/library choice must not
+		// accidentally borrow the History panel's fallback.
+		if strings.TrimSpace(r.FormValue("source_url")) != "" || r.MultipartForm == nil || len(r.MultipartForm.File["source_upload"]) != 1 {
+			s.renderJobError(w, http.StatusBadRequest, "Upload one recording to make a cover.")
+			return
+		}
+	}
+	if len([]rune(title)) > maxTitle || len(style) > 20000 || len(lyrics) > 20000 {
+		s.renderJobError(w, http.StatusBadRequest, "Keep the title under 120 characters and the style and lyrics under 20,000 bytes each.")
+		return
+	}
+	if badTagLine(lyrics) {
+		s.renderJobError(w, http.StatusBadRequest, "Every section tag like [Verse] needs its own line.")
+		return
+	}
+
+	sourceURL, sourceSongID, err := s.resolveCoverSource(r, songID)
 	if err != nil {
 		s.renderJobError(w, http.StatusBadRequest, err.Error())
 		return
@@ -269,8 +326,8 @@ func (s *Server) handleCoverSong(w http.ResponseWriter, r *http.Request) {
 
 	s.queueJob(w, r, "cover", &store.Job{
 		Lyrics: lyrics, Caption: style,
-		Title:  src.Title,
-		Engine: src.Engine,
+		Title:  title,
+		Engine: store.EngineYue2,
 		Mode:   store.ModeCover,
 		// The URL is minted now and stored, because the worker does not fetch it
 		// until the job reaches a GPU — which can be 45 minutes later. That is
@@ -280,7 +337,7 @@ func (s *Server) handleCoverSong(w http.ResponseWriter, r *http.Request) {
 		// Set only when the recording is one of ours, so a cover of an uploaded
 		// file is not falsely recorded as derived from this song.
 		SourceSongID: sourceSongID,
-		Seed:         seedFor(r, src),
+		Seed:         seed,
 		CfgScale:     scale,
 	})
 }
@@ -305,10 +362,14 @@ func (s *Server) storeUpload(src io.Reader, _ string) (string, error) {
 		return "", fmt.Errorf("could not store the recording: %w", err)
 	}
 	defer f.Close()
-	// LimitReader enforces the cap even if the declared size lied.
-	if _, err := io.Copy(f, io.LimitReader(src, maxUploadBytes)); err != nil {
+	// Read one byte past the cap: a limited copy alone silently truncates.
+	n, err := io.Copy(f, io.LimitReader(src, maxUploadBytes+1))
+	if closeErr := f.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil || n == 0 || n > maxUploadBytes {
 		_ = os.Remove(path)
-		return "", fmt.Errorf("could not store the recording: %w", err)
+		return "", fmt.Errorf("Could not store the recording — choose a nonempty file under 64 MB.")
 	}
 	return name, nil
 }

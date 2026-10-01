@@ -8,7 +8,7 @@
 // shared browser never hands one account's lyrics to the next.
 
 const MM3_DRAFT_FIELDS = ['idea', 'title', 'lyrics', 'caption', 'dur', 'seed', 'bpm', 'key',
-  'vocals', 'engine', 'cot', 'instrumental'];
+  'vocals', 'engine', 'cot', 'instrumental', 'mode', 'styleStrength', 'findLyrics'];
 
 function mm3Defaults() {
   // engine: which model runs this song. Keys match the store's engine
@@ -21,7 +21,8 @@ function mm3Defaults() {
   //   for a wordless song. Kept in the draft because it is a choice the user
   //   made, unlike the assistant's notes which describe one draft.
   return { idea: '', title: '', lyrics: '', caption: '', dur: 30, seed: null, bpm: 96,
-           key: 'C Major', vocals: true, engine: 'minimax', cot: '', instrumental: false };
+           key: 'C Major', vocals: true, engine: 'minimax', cot: '', instrumental: false,
+           mode: 'create', styleStrength: 'balanced', findLyrics: false };
 }
 
 // window.MM3_USER is set by the head template; the empty name is the signed-out

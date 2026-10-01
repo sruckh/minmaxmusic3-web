@@ -15,6 +15,7 @@ import (
 
 	"github.com/sruckh/minmaxmusic3-web/internal/config"
 	"github.com/sruckh/minmaxmusic3-web/internal/llm"
+	"github.com/sruckh/minmaxmusic3-web/internal/lyrics"
 	"github.com/sruckh/minmaxmusic3-web/internal/runpod"
 	"github.com/sruckh/minmaxmusic3-web/internal/store"
 	"github.com/sruckh/minmaxmusic3-web/internal/worker"
@@ -30,9 +31,11 @@ type Server struct {
 	// constants. A map rather than a field per engine, because the worker's
 	// dispatch is itself keyed by a job's engine — the lookup and the
 	// configuration stay the same shape, and a third engine is one entry.
-	rps map[string]*runpod.Client
-	llm *llm.Client
-	wk  *worker.Worker
+	rps           map[string]*runpod.Client
+	llm           *llm.Client
+	wk            *worker.Worker
+	lyrics        *lyrics.Client
+	lyricsLimiter *limiter
 
 	genLimiter      *limiter
 	assistLimiter   *limiter
@@ -89,7 +92,8 @@ func New(cfg *config.Config, log *slog.Logger) (*Server, error) {
 	}
 	return &Server{
 		cfg: cfg, log: log, tpl: tpl,
-		rps: rps,
+		rps:    rps,
+		lyrics: lyrics.New(cfg.AcoustIDAPIKey),
 		llm: &llm.Client{
 			BaseURL: cfg.LLMBaseURL, APIKey: cfg.LLMAPIKey, Model: cfg.LLMModelID,
 			Thinking: cfg.LLMThinking, ReasoningEffort: cfg.LLMReasoningEffort,
@@ -224,6 +228,7 @@ func (s *Server) Routes() http.Handler {
 	// holds, so the form can only offer an engine with an endpoint behind it.
 	rt.handleFunc("GET /{$}", s.page("index.html", map[string]any{
 		"Page": "index", "TagsJSON": sectionTagsJSON, "Yue2Enabled": s.cfg.Yue2Enabled(),
+		"LyricsEnabled": s.cfg.Yue2Enabled() && s.lyrics.Available(),
 	}))
 
 	s.registerAuth(rt)

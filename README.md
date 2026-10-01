@@ -71,7 +71,10 @@ The application is **multi-user and closed by default**: every route except sign
 - Editing re-renders the whole song. The waveform outside the change is not preserved, and the form says so.
 
 ### 🎨 Cover — Re-style a Recording *(YuE2)*
-- Supply a recording three ways: a song already in the library, an upload, or a pasted URL. All three become one thing — a URL the worker can fetch.
+- **Start on Generate:** select YuE2 → **Cover a recording**, upload audio under 64 MB, describe the new style and press **Generate cover**. No existing History song is required. The History Cover panel still accepts the song itself, an upload, or a pasted URL. All sources become a URL the worker can fetch.
+- **Optional lyrics lookup:** check **Find lyrics for this recording** before generating. Local Chromaprint identifies the audio, AcoustID returns recording matches, MusicBrainz supplies metadata, and LRCLIB returns editable lyrics. A clear match fills only an empty lyrics box; ambiguous matches require selection, and replacing typed words requires confirmation. If lookup finds nothing or fails, manual lyrics and transcription remain available.
+- Lookup sends a fingerprint/duration and recording metadata, **not audio**, to those services. Its temporary upload is deleted after lookup; generating uploads the recording again through the existing signed-source flow. Only text/settings survive navigation: reselect the recording after restoring a draft.
+- Lookup needs an application key registered at [AcoustID](https://acoustid.org/new-application), stored as `MM3_ACOUSTID_API_KEY` in the existing root Infisical folder/environment. The image includes `fpcalc`, FFmpeg and ffprobe; local development must provide them too. Missing key/tools disables lookup, not covers. These public services are used non-commercially; respect their terms before commercial use. Requests are capped at 20/day/account, AcoustID at 3/sec and MusicBrainz at 1/sec. Fingerprinting identifies near-identical recordings, not arbitrary performances of the same song.
 - YuE2 transcribes the melody and the lyrics, then generates a new version. Supplying your own lyrics is **optional** and takes precedence over the transcription.
 - **A cover keeps the recording's melody, tempo and key.** The worker locks generation to the transcribed melody (`cot="melody"`), so a tempo or key written into the style text is ignored — a 77 BPM ballad covered as "112 BPM synth-pop" is still 77 BPM.
 - **Style strength decides how far the sound moves.** It is sent as YuE2's `cfg_scale`, as one of three presets, because the usable range is narrow and was found by listening:
@@ -151,7 +154,7 @@ A song page offers three ways to derive a new song from an existing one. They ke
 A cover runs a longer path — the form mints a signed link to the recording, and the worker transcribes it before generating:
 
 ```text
-POST /songs/{id}/cover
+POST /jobs (mode=cover, uploaded recording) or POST /songs/{id}/cover
   → mint a signed link to the recording        (or pass a pasted URL through)
   → queue job (mode=cover, engine=yue2)
   → worker fetches the link
@@ -372,7 +375,8 @@ Access is enforced by one middleware wrapping the entire mux: anything not liste
 | `GET /` | `GET` | Authenticated | Web console homepage with engine selector, generation form &amp; assistant panel. |
 | `POST /assistant` | `POST` | Authenticated | AI assistant proxy, using the selected engine's prompt and reply format. |
 | `POST /assistant/style` | `POST` | Authenticated | Style editor: rewrites only the style for the chosen engine, returning `{"style": …}`. |
-| `POST /jobs` | `POST` | Authenticated | Validate form and queue a text-to-song generation job, owned by the caller. |
+| `POST /jobs` | `POST` | Authenticated | Queue a create job (default), or a standalone `mode=cover` job when `engine=yue2` is available. Cover requires one multipart `source_upload` and a style; optional lyrics/title/seed and `style_strength` (balanced default). No library song ID required. |
+| `POST /lyrics/lookup` | `POST` | Authenticated | Opt-in lookup with multipart `source_upload` and `find_lyrics=1`. Returns candidate recording metadata and editable lyrics, never a GPU job. Rate limited to 20/day/account. |
 | `GET /jobs/{id}` | `GET` | Owner / Admin | htmx polling endpoint returning job status or player HTML. |
 | `GET /history` | `GET` | Authenticated | Partitioned library: *My Songs* and *Community Songs*, each paged independently (`?mine=`, `?public=`). |
 | `GET /history/personal` | `GET` | Authenticated | htmx fragment for the caller's own songs (`?page=`). |
@@ -415,6 +419,7 @@ Values marked *(Infisical)* have no default. They are stored in the Infisical pr
 | `RUNPOD_API_KEY` | *(Infisical)* | RunPod authorization key. Both endpoints run under one RunPod account, so this one key covers both. |
 | `YUE2_RUNPOD_ENDPOINT` | *(Infisical)* | YuE2 RunPod serverless endpoint URL. **Unset, the engine is simply not offered** — the selector shows MiniMax alone and nothing else changes. |
 | `YUE2_RUNPOD_API_KEY` | *(Infisical)* | Optional, and normally unnecessary — `RUNPOD_API_KEY` covers both endpoints. Set it only if your key is scoped to named endpoints and cannot reach YuE2; that shows up as a `403` for the YuE2 endpoint alone. Set, it takes precedence. |
+| `MM3_ACOUSTID_API_KEY` | *(Infisical, optional)* | Registered AcoustID application key for non-commercial, opt-in lyrics lookup. Missing key disables lookup only; never exposed to browsers/logs. |
 | `ADMIN_USER` | *(Infisical)* | **Required.** Static administrator login name. Blank disables administrator sign-in — see [Authentication & Administration](#authentication--administration). |
 | `ADMIN_PASSWORD` | *(Infisical)* | **Required.** Static administrator password, compared in constant time. Blank disables administrator sign-in. |
 | `MM3_LS_BUCKET` | *(Infisical)* | **Required.** Bucket holding the backup: `mm3/db` (Litestream) and `mm3/files` (audio and uploads). |
