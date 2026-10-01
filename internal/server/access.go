@@ -163,7 +163,7 @@ func (s *Server) protect(next http.Handler) http.Handler {
 func (s *Server) authenticate(w http.ResponseWriter, r *http.Request) (*UserContext, bool) {
 	token := sessionToken(r)
 	if token == "" {
-		s.denySignIn(w, r, noticeKeySignIn)
+		s.denySignIn(w, r, noticeKeySignIn, reasonNoSession)
 		return nil, false
 	}
 	sess, err := s.st.GetSession(token)
@@ -177,7 +177,7 @@ func (s *Server) authenticate(w http.ResponseWriter, r *http.Request) (*UserCont
 		// Unknown, expired, or orphaned. Drop the dead cookie so the browser
 		// stops presenting it.
 		s.clearSessionCookie(w, r)
-		s.denySignIn(w, r, noticeKeySignIn)
+		s.denySignIn(w, r, noticeKeySignIn, reasonDeadSession)
 		return nil, false
 	}
 
@@ -207,7 +207,39 @@ func (s *Server) authenticate(w http.ResponseWriter, r *http.Request) (*UserCont
 	return uc, true
 }
 
-func (s *Server) denySignIn(w http.ResponseWriter, r *http.Request, noticeKey string) {
+// Why a request arrived without a usable session. The two are logged at
+// different weights because they say different things about the caller.
+const (
+	// reasonNoSession is a request with no cookie at all: a signed-out visitor,
+	// or a scanner. Every bot that probes / lands here, since the root page is
+	// not in publicPatterns.
+	reasonNoSession = "no-session"
+	// reasonDeadSession is a cookie that was presented and did not resolve —
+	// expired, revoked on restart, or orphaned by a deleted account. The caller
+	// believed it was signed in.
+	reasonDeadSession = "dead-session"
+)
+
+// denySignIn refuses a request that has no usable session.
+//
+// It logs, because this was the one refusal in this file that stayed silent.
+// Every other denial records a warning, so an empty log reads as "nothing was
+// refused" rather than "something was refused and nobody wrote it down". For a
+// browser that is the difference between a diagnosable failure and hours spent
+// proving the server innocent: a 401 answered with an HX-Redirect can leave the
+// page looking unchanged, which from the operator's side is indistinguishable
+// from a click that never arrived.
+//
+// The weight follows the information. A state change, or any session that was
+// presented and failed, is warned about — the caller thought it was signed in.
+// Reading a protected page while signed out is ordinary traffic and is not
+// logged at all; at the default slog level a debug line would be dropped
+// anyway, so writing one would only suggest a signal that never appears.
+func (s *Server) denySignIn(w http.ResponseWriter, r *http.Request, noticeKey, reason string) {
+	if !safeMethod(r) || reason == reasonDeadSession {
+		s.log.Warn("unauthenticated request refused", "path", r.URL.Path,
+			"method", r.Method, "reason", reason, "ip", s.clientIP(r))
+	}
 	s.deny(w, r, http.StatusUnauthorized, "unauthenticated",
 		"Sign in to continue.", s.loginURL(r, noticeKey))
 }

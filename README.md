@@ -209,6 +209,14 @@ up.sh: audio/uploads sync to the bucket completed a pass
 
 A `WARNING` in place of either means that part of the backup is not working; see [Backup & Restore](#backup--restore).
 
+Beyond bring-up, a quiet log means nothing was refused rather than nothing happened: only failures and state changes are logged. Requests denied for lacking a session are the exception that gets a line, and only when they carry information — a state change, or a cookie that was presented and did not resolve (expired, revoked on restart, or orphaned by a deleted account):
+
+```text
+level=WARN msg="unauthenticated request refused" path=/jobs method=POST reason=dead-session ip=203.0.113.7
+```
+
+Reading a protected page while signed out is ordinary traffic and is deliberately not logged, so scanners cannot fill the log. `reason=no-session` appears only for those when they attempt a write.
+
 ---
 
 ## Backup & Restore

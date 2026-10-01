@@ -6,16 +6,32 @@
 <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon/favicon-32x32.png">
 <link rel="icon" type="image/png" sizes="16x16" href="/static/favicon/favicon-16x16.png">
 <link rel="manifest" href="/static/favicon/site.webmanifest">
+<!-- Dark first, to match the default theme; the script below rewrites it to the
+     resolved theme before first paint. The manifest carries the same static
+     values for the install prompt and splash screen, which cannot run JS. -->
+<meta name="theme-color" content="#000000">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,500;1,9..144,500&family=Hanken+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/static/app.css">
 <script>
 // Theme before first paint: stored choice, else system preference.
+//
+// mm3ApplyTheme is global because the nav's theme toggle calls it too, so the
+// colour mapping below lives in one place rather than once per caller.
+window.mm3ApplyTheme = function (t) {
+  document.documentElement.setAttribute('data-theme', t);
+  // The browser UI (status bar, and on Android the installed app's chrome)
+  // reads theme-color from the document, not from the app's CSS variables, so
+  // it has to be told explicitly or it stays dark in light mode. These are the
+  // two values of --bg: --ink for dark, --paper for light.
+  var m = document.querySelector('meta[name="theme-color"]');
+  if (m) m.setAttribute('content', t === 'dark' ? '#000000' : '#FFFFFF');
+};
 (function () {
   var t = localStorage.getItem('mm3-theme');
   if (!t) t = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-  document.documentElement.setAttribute('data-theme', t);
+  window.mm3ApplyTheme(t);
 })();
 </script>
 <script>
@@ -61,7 +77,7 @@ window.MM3_USER = {{if .User}}{{.User.Username}}{{else}}""{{end}};
     </div>
     {{end}}
     <button type="button" class="theme-toggle" x-data="{ theme: document.documentElement.getAttribute('data-theme') || 'dark' }"
-            @click="theme = (theme === 'dark' ? 'light' : 'dark'); document.documentElement.setAttribute('data-theme', theme); localStorage.setItem('mm3-theme', theme)"
+            @click="theme = (theme === 'dark' ? 'light' : 'dark'); mm3ApplyTheme(theme); localStorage.setItem('mm3-theme', theme)"
             aria-label="Toggle dark / light theme">
       <span x-text="theme.toUpperCase()">DARK</span>
     </button>
