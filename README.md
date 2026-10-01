@@ -204,10 +204,12 @@ level=WARN msg="administrator login disabled: ADMIN_USER and ADMIN_PASSWORD must
 
 ```text
 up.sh: database replication to the bucket is running
-up.sh: audio/uploads sync to the bucket completed a pass
+up.sh: audio/uploads sync to the bucket completed a pass — audio verified: bucket 3 object(s) 14676801 byte(s); local 3 file(s)
 ```
 
 A `WARNING` in place of either means that part of the backup is not working; see [Backup & Restore](#backup--restore).
+
+The second line's tail is the bucket's own contents read back, not a claim that the copy ran: `rclone copy` exits 0 when it has nothing to do, so an empty prefix and a fully synced one are otherwise indistinguishable. Compare its object count against the song library. A bucket one or two files behind is normal — `--min-age 30s` holds back a song still being written until the next pass — but `bucket 0 object(s)` against a non-zero local count is not, and the service says so on stderr.
 
 Beyond bring-up, a quiet log means nothing was refused rather than nothing happened: only failures and state changes are logged. Requests denied for lacking a session are the exception that gets a line, and only when they carry information — a state change, or a cookie that was presented and did not resolve (expired, revoked on restart, or orphaned by a deleted account):
 
@@ -229,7 +231,7 @@ total loss.
 | Service | What it does |
 |---|---|
 | `litestream` | Continuously replicates `/data/mm3.db` to `s3://<bucket>/mm3/db`. Snapshot every 6 h, kept 7 days. |
-| `files-sync` | Copies audio and staged uploads (everything under `/data` but the database) to `s3://<bucket>/mm3/files` every 15 min (`MM3_FILES_SYNC_INTERVAL`, seconds). Uses `rclone copy`, never `sync`, so a mistakenly empty volume cannot erase the backup. |
+| `files-sync` | Copies audio and staged uploads (everything under `/data` but the database) to `s3://<bucket>/mm3/files` every 15 min (`MM3_FILES_SYNC_INTERVAL`, seconds). Uses `rclone copy`, never `sync`, so a mistakenly empty volume cannot erase the backup. Each pass then lists the prefix back and logs the object count and byte total to `/tmp/files-sync.verify`. |
 | `restore` | Runs once before the app. When `/data` has no database it restores one from the bucket; when `/data/audio` is missing it copies the files back. With data present it changes nothing. |
 
 **Recovery is automatic.** Bring the stack up on an empty volume and `restore`
@@ -241,9 +243,10 @@ bucket (first ever start) is not an error.
 Five secrets must be present in the Infisical environment the stack runs from
 (`INFISICAL_ENV`, default `dev`): `MM3_LS_BUCKET`, `MM3_LS_ENDPOINT`,
 `MM3_LS_REGION`, `MM3_LS_KEY_ID`, `MM3_LS_APP_KEY`. Scope the application key to
-that one bucket. `scripts/up.sh` reports whether replication and the file sync
-completed a pass — read those two lines after every bring-up, since the app is
-healthy either way.
+that one bucket. `scripts/up.sh` reports whether replication is running and
+whether the file sync completed a pass, including the audio object count and
+byte total read back from the bucket — read those two lines after every
+bring-up, since the app is healthy either way.
 
 **Upgrading an existing deployment:** add the five secrets *before* the next
 `scripts/up.sh`. Without them `restore` exits non-zero and nothing starts —

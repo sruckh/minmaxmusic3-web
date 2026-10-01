@@ -49,6 +49,9 @@ services:
       start_period: 15s
 
   # Audio and uploads, every MM3_FILES_SYNC_INTERVAL seconds (default 900).
+  # Each pass lists the prefix back and logs the object count and byte total,
+  # so "the copy did not error" is not mistaken for "the bucket holds the
+  # songs" — rclone copy exits 0 when it has nothing to do.
   files-sync:
     <<: *backup
     container_name: mm3-files-sync

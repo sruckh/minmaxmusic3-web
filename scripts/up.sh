@@ -81,7 +81,15 @@ until docker exec mm3-files-sync test -f /tmp/files-sync.ok 2>/dev/null; do
 	sleep 1
 done
 if docker exec mm3-files-sync test -f /tmp/files-sync.ok 2>/dev/null; then
-	echo "up.sh: audio/uploads sync to the bucket completed a pass" >&2
+	# The marker proves a pass ran; the verify file proves what the bucket
+	# actually holds, which is the difference between "it did not error" and
+	# "your songs are off-host". Read it rather than restating the marker.
+	verified=$(docker exec mm3-files-sync cat /tmp/files-sync.verify 2>/dev/null)
+	if [ -n "$verified" ]; then
+		echo "up.sh: audio/uploads sync to the bucket completed a pass — ${verified}" >&2
+	else
+		echo "up.sh: audio/uploads sync to the bucket completed a pass" >&2
+	fi
 else
 	echo "up.sh: WARNING — audio/uploads sync has not completed a pass." >&2
 	echo "up.sh:   docker logs mm3-files-sync --tail 30" >&2
