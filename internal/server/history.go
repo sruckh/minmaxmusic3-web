@@ -287,6 +287,12 @@ func (s *Server) handleDeleteSong(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if g == nil {
+		// Stale and forbidden IDs remain identical 404s. Refresh the browser's
+		// library rather than leaving a stale detail page or Delete button.
+		s.log.Warn("delete song unavailable", "id", id, "user_id", s.caller(r).UserID)
+		if isHTMX(r) {
+			w.Header().Set("HX-Redirect", "/history")
+		}
 		http.NotFound(w, r)
 		return
 	}
@@ -299,8 +305,8 @@ func (s *Server) handleDeleteSong(w http.ResponseWriter, r *http.Request) {
 }
 
 // answerDelete says where the browser goes once a song is gone. An htmx
-// delete from a list just drops its row, but one from the song's own page
-// must leave it, since that page now 404s. A plain browser always lands on
+// delete from a list refreshes both partitions, while one from the song's own
+// page must leave it, since that page now 404s. A plain browser always lands on
 // the library.
 func answerDelete(w http.ResponseWriter, r *http.Request) {
 	// Only a path on this site: the same check as the post-login redirect, so
@@ -315,6 +321,10 @@ func answerDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	if target != "" {
 		w.Header().Set("HX-Redirect", target)
+	} else {
+		// A shared song appears in both sections. Removing only the clicked
+		// row leaves its other Delete button stale; reload both and their counts.
+		w.Header().Set("HX-Refresh", "true")
 	}
 	w.WriteHeader(http.StatusOK)
 }

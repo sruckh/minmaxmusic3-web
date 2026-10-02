@@ -49,7 +49,7 @@
           {{if .CanEdit}}
           <button type="button" class="btn btn--ghost" onclick="mm3EditInGenerator()">Edit in generator</button>
           <button type="button" class="btn btn--ghost btn--danger"
-            hx-delete="/songs/{{.Song.ID}}?redirect=/history"
+            hx-delete="/songs/{{.Song.ID}}?redirect=/history" hx-disabled-elt="this" hx-sync="this:drop"
             hx-confirm="Are you sure you want to delete this song?">Delete song</button>
           {{end}}
         </div>

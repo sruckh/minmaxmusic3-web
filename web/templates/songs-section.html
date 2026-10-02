@@ -65,7 +65,7 @@
             <a class="btn btn--ghost btn--sm" href="/audio/{{.ID}}" download>Download</a>
             {{if .CanEdit}}
             <button type="button" class="btn btn--ghost btn--sm btn--danger"
-                    hx-delete="/songs/{{.ID}}"
+                    hx-delete="/songs/{{.ID}}" hx-disabled-elt="this" hx-sync="this:drop"
                     hx-target="closest tr" hx-swap="outerHTML swap:300ms"
                     hx-confirm="Are you sure you want to delete '{{.Title}}'?"
                     aria-label="Delete song">

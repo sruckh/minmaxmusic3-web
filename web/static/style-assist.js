@@ -9,6 +9,36 @@
 //
 // The rewrite replaces the box's text and keeps the old text for Undo. Nothing
 // is submitted: the user still presses Generate or Re-render.
+// Both assistant surfaces use the same error protocol, including proxy errors
+// which have an HTML body rather than the app's JSON.
+async function mm3AssistantError(res, kind = 'draft') {
+  if (res.redirected && res.url && new URL(res.url).pathname === '/login') {
+    return 'Your session expired. Sign in again before using the assistant.';
+  }
+  const decoded = await res.json().catch(() => null);
+  const data = decoded && typeof decoded === 'object' ? decoded : {};
+  const bytes = Number(data.max_input_bytes) || Number(window.MM3_ASSISTANT_MAX_BYTES);
+  const limit = Number.isFinite(bytes) && bytes > 0 ? ` (${Math.floor(bytes / 1024)} KiB maximum)` : '';
+  const messages = {
+    'assistant-input-limit': `The idea or lyric context is too large${limit}. Shorten it before retrying; nothing was cut off.`,
+    'assistant-output-limit': 'The AI reply hit its output limit. Ask for less output and retry; your draft has not changed.',
+    'assistant-refused': 'The AI provider declined this request. Try a different request or edit the draft yourself.',
+    'assistant-timeout': 'The assistant took too long. Retry in a moment or edit the draft yourself.',
+    'assistant-unavailable': `The AI service is unavailable. Retry later or edit the ${kind} yourself.`,
+    'assistant-unparseable': `The assistant returned an unreadable ${kind}. Your text is unchanged; try rephrasing the request.`,
+    'assistant-rate-limited': 'The AI service is busy. Retry in a minute.',
+    'assistant-bad-form': 'Could not read that request. Try again.',
+    'empty-idea': 'Describe the song or changes you want.',
+    'empty-change': 'Describe how you want the style to change.',
+  };
+  if (Object.hasOwn(messages, data.error)) return messages[data.error];
+  if (res.status === 429) return 'Rate limit reached. Try again later.';
+  if (res.status === 413) return `The request is too large${limit}. Shorten the instructions or pasted lyrics.`;
+  if (res.status === 401 || res.status === 403) return 'Sign in again before using the assistant.';
+  if (res.status === 504) return 'The AI service timed out. Retry later; your text is unchanged.';
+  return `The AI service did not return a usable ${kind}. Retry later; your text is unchanged.`;
+}
+
 function mm3StyleRewrite() {
   return {
     open: false, change: '', busy: false, error: '', previous: null, cfg: {},
@@ -60,15 +90,14 @@ function mm3StyleRewrite() {
         });
         const res = await fetch('/assistant/style', { method: 'POST', body });
         if (!res.ok) {
-          if (res.status === 429) { this.error = 'Rate limit reached — try again in a little while.'; return; }
-          const map = { 'assistant-timeout': 'The assistant took too long — try again in a minute.',
-                        'assistant-unavailable': 'The assistant is unavailable right now. You can still edit the style yourself.',
-                        'assistant-unparseable': 'The assistant gave an unusable style — try rephrasing the change.' };
-          const j = await res.json().catch(() => ({}));
-          this.error = map[j.error] || 'Something went wrong — try again.';
+          this.error = await mm3AssistantError(res, 'style');
           return;
         }
-        const d = await res.json();
+        const d = await res.json().catch(() => null);
+        if (!d || typeof d.style !== 'string' || !d.style.trim()) {
+          this.error = await mm3AssistantError(res, 'style');
+          return;
+        }
         this.previous = box.value;
         this.put(d.style);
         this.change = ''; this.open = false;

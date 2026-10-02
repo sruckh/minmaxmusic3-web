@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/sruckh/minmaxmusic3-web/internal/config"
+	"github.com/sruckh/minmaxmusic3-web/internal/llm"
 	"github.com/sruckh/minmaxmusic3-web/internal/server"
 )
 
@@ -47,7 +48,7 @@ func run(logger *slog.Logger) error {
 		Handler:           srv.Routes(),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      60 * time.Second,
+		WriteTimeout:      llm.CallTimeout + 10*time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
 

@@ -46,7 +46,7 @@ func TestDecodeSSEResponse(t *testing.T) {
 	_ = draft
 	// The folded content "hello world" has no fenced JSON, so the parse
 	// must fail cleanly — proving the SSE fold itself worked.
-	if err == nil || !strings.Contains(err.Error(), "no usable JSON") {
+	if !errors.Is(err, ErrUnparseable) {
 		t.Fatalf("expected ErrUnparseable from non-JSON folded content, got %v", err)
 	}
 }

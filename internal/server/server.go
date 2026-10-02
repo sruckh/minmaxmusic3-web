@@ -228,7 +228,8 @@ func (s *Server) Routes() http.Handler {
 	// holds, so the form can only offer an engine with an endpoint behind it.
 	rt.handleFunc("GET /{$}", s.page("index.html", map[string]any{
 		"Page": "index", "TagsJSON": sectionTagsJSON, "Yue2Enabled": s.cfg.Yue2Enabled(),
-		"LyricsEnabled": s.cfg.Yue2Enabled() && s.lyrics.Available(),
+		"LyricsEnabled":          s.cfg.Yue2Enabled() && s.lyrics.Available(),
+		"AssistantMaxInputBytes": llm.MaxInputBytes,
 	}))
 
 	s.registerAuth(rt)

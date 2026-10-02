@@ -2,6 +2,7 @@ package server
 
 import (
 	"cmp"
+	"context"
 	"errors"
 	"fmt"
 	"math"
@@ -59,9 +60,15 @@ func (s *Server) handleAssistant(w http.ResponseWriter, r *http.Request) {
 	if !s.genAllowed(w, r, s.assistLimiter, "assistant") {
 		return
 	}
+	ctx, cancel := context.WithTimeout(r.Context(), llm.CallTimeout)
+	defer cancel()
+	r = r.WithContext(ctx)
+	if !parseAssistantForm(w, r) {
+		return
+	}
 	idea := strings.TrimSpace(r.FormValue("idea"))
 	if idea == "" {
-		http.Error(w, `{"error":"empty-idea"}`, http.StatusBadRequest)
+		writeAssistantError(w, http.StatusBadRequest, "empty-idea")
 		return
 	}
 	// The engine decides which prompt is sent and which reply format is
@@ -70,7 +77,7 @@ func (s *Server) handleAssistant(w http.ResponseWriter, r *http.Request) {
 	// usable draft, and MiniMax is what every client meant before YuE2 existed.
 	draft, err := s.llm.Draft(r.Context(), idea, s.engineOf(r))
 	if err != nil {
-		s.log.Warn("assistant", "err", err)
+		s.log.Warn("assistant", "engine", s.engineOf(r), "input_bytes", len(idea), "err", err)
 		s.assistantError(w, err)
 		return
 	}
@@ -89,9 +96,15 @@ func (s *Server) handleStyleAssistant(w http.ResponseWriter, r *http.Request) {
 	if !s.genAllowed(w, r, s.assistLimiter, "assistant") {
 		return
 	}
+	ctx, cancel := context.WithTimeout(r.Context(), llm.CallTimeout)
+	defer cancel()
+	r = r.WithContext(ctx)
+	if !parseAssistantForm(w, r) {
+		return
+	}
 	change := strings.TrimSpace(r.FormValue("change"))
 	if change == "" {
-		http.Error(w, `{"error":"empty-change"}`, http.StatusBadRequest)
+		writeAssistantError(w, http.StatusBadRequest, "empty-change")
 		return
 	}
 	style, err := s.llm.RewriteStyle(r.Context(), s.engineOf(r), llm.StyleRequest{
@@ -100,7 +113,7 @@ func (s *Server) handleStyleAssistant(w http.ResponseWriter, r *http.Request) {
 		Lyrics: r.FormValue("lyrics"),
 	})
 	if err != nil {
-		s.log.Warn("style assistant", "err", err)
+		s.log.Warn("style assistant", "engine", s.engineOf(r), "lyrics_bytes", len(r.FormValue("lyrics")), "err", err)
 		s.assistantError(w, err)
 		return
 	}
@@ -108,14 +121,42 @@ func (s *Server) handleStyleAssistant(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) assistantError(w http.ResponseWriter, err error) {
+	code, key := http.StatusBadGateway, "assistant-unparseable"
 	switch {
+	case errors.Is(err, llm.ErrInputLimit):
+		code, key = http.StatusRequestEntityTooLarge, "assistant-input-limit"
+	case errors.Is(err, llm.ErrOutputLimit):
+		key = "assistant-output-limit"
+	case errors.Is(err, llm.ErrRefused):
+		code, key = http.StatusUnprocessableEntity, "assistant-refused"
+	case errors.Is(err, llm.ErrRateLimited):
+		code, key = http.StatusTooManyRequests, "assistant-rate-limited"
+		w.Header().Set("Retry-After", "60")
 	case errors.Is(err, llm.ErrTimeout):
-		http.Error(w, `{"error":"assistant-timeout"}`, http.StatusGatewayTimeout)
+		code, key = http.StatusGatewayTimeout, "assistant-timeout"
 	case errors.Is(err, llm.ErrUnavailable), errors.Is(err, llm.ErrNoConfig):
-		http.Error(w, `{"error":"assistant-unavailable"}`, http.StatusServiceUnavailable)
-	default:
-		http.Error(w, `{"error":"assistant-unparseable"}`, http.StatusBadGateway)
+		code, key = http.StatusServiceUnavailable, "assistant-unavailable"
 	}
+	writeAssistantError(w, code, key)
+}
+
+func writeAssistantError(w http.ResponseWriter, code int, key string) {
+	writeJSON(w, code, map[string]any{"error": key, "max_input_bytes": llm.MaxInputBytes})
+}
+
+func parseAssistantForm(w http.ResponseWriter, r *http.Request) bool {
+	// Enough for percent-encoded full-song text, but not an unbounded body.
+	r.Body = http.MaxBytesReader(w, r.Body, 128<<10)
+	if err := r.ParseForm(); err != nil {
+		var large *http.MaxBytesError
+		if errors.As(err, &large) {
+			writeAssistantError(w, http.StatusRequestEntityTooLarge, "assistant-input-limit")
+		} else {
+			writeAssistantError(w, http.StatusBadRequest, "assistant-bad-form")
+		}
+		return false
+	}
+	return true
 }
 
 type jobForm struct {

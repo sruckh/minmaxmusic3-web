@@ -5,7 +5,7 @@
 <!-- Both engines' tag lists, so switching engine re-renders the row without a
      round trip. Declared before the component so it is defined by the time
      Alpine walks the tree. -->
-<script>window.MM3_TAGS = {{.TagsJSON}}; window.MM3_YUE2_ENABLED = {{.Yue2Enabled}}; window.MM3_LYRICS_ENABLED = {{.LyricsEnabled}};</script>
+<script>window.MM3_TAGS = {{.TagsJSON}}; window.MM3_YUE2_ENABLED = {{.Yue2Enabled}}; window.MM3_LYRICS_ENABLED = {{.LyricsEnabled}}; window.MM3_ASSISTANT_MAX_BYTES = {{.AssistantMaxInputBytes}};</script>
 <script src="/static/lyrics.js"></script>
 <div class="shell" x-data="mm3Page()">
   {{template "nav" .}}
@@ -75,14 +75,18 @@
           <!-- x-ref so the panel can put the cursor here the moment it opens. A
                box that appears with no caret in it leaves the user hunting for
                where to start typing. -->
-          <textarea x-ref="assistantInput" class="input assistant-input" id="idea" name="idea" x-model="idea" rows="3" style="flex:1; min-width:200px;"
+          <textarea x-ref="assistantInput" class="input assistant-input" id="idea" name="idea" x-model="idea" rows="3" aria-describedby="assistant-input-help" :aria-invalid="ideaBytes > assistantLimit" style="flex:1; min-width:200px;"
             placeholder="A bittersweet folk song about leaving a coastal town in the rain…"></textarea>
-          <button type="button" class="btn" @click="ask()" :disabled="thinking || !idea.trim()" style="align-self:flex-end;">
+          <button type="button" class="btn" @click="ask()" :disabled="thinking || !idea.trim() || ideaBytes > assistantLimit" style="align-self:flex-end;">
             <span x-show="!thinking">Draft it</span>
             <span x-show="thinking" x-cloak class="spin" aria-hidden="true"></span>
             <span x-show="thinking" x-cloak>Drafting…</span>
           </button>
         </div>
+        <p id="assistant-input-help" class="help">Paste complete lyrics with your requested changes. Input is never shortened automatically.
+          <span class="charcount" x-text="`${ideaBytes.toLocaleString()} / ${assistantLimit.toLocaleString()} bytes`"></span>
+        </p>
+        <p class="help" style="color:var(--warn);" x-show="ideaBytes > assistantLimit" x-cloak>Shorten the request before drafting; it exceeds the input limit.</p>
         <p class="help" style="color:var(--warn); margin-top:8px;" x-show="error" x-cloak x-text="error" role="alert"></p>
 
         <!-- The YuE2 assistant discloses its assumptions instead of asking
@@ -373,6 +377,8 @@ function mm3Page() {
     // Assumptions the YuE2 assistant disclosed. Not part of the draft — they
     // describe one draft, not the form, so they are not restored with it.
     notes: [],
+    get assistantLimit() { return window.MM3_ASSISTANT_MAX_BYTES; },
+    get ideaBytes() { return new TextEncoder().encode(this.idea.trim()).length; },
 
     // The section tags the selected engine accepts. Both lists ship in the
     // page, so switching engine re-renders the row without a round trip.
@@ -455,6 +461,11 @@ function mm3Page() {
       return `${s}s`;
     },
     async ask() {
+      if (this.thinking) return;
+      if (this.ideaBytes > this.assistantLimit) {
+        this.error = 'The idea or pasted lyrics exceed the input limit. Shorten them before drafting.';
+        return;
+      }
       this.thinking = true; this.error = ''; this.notes = [];
       try {
         // The engine selects the system prompt and the reply format server
@@ -463,14 +474,14 @@ function mm3Page() {
         const body = new URLSearchParams({ idea: this.idea, engine: this.engine });
         const res = await fetch('/assistant', { method: 'POST', body });
         if (!res.ok) {
-          const map = { 'assistant-timeout': 'The assistant took too long — try again in a minute.',
-                        'assistant-unavailable': 'The assistant is unavailable right now. You can still write it yourself below.',
-                        'assistant-unparseable': 'The assistant gave an unusable draft — try rephrasing your idea.' };
-          const j = await res.json().catch(() => ({}));
-          this.error = map[j.error] || 'Something went wrong — try again.';
+          this.error = await mm3AssistantError(res);
           return;
         }
-        const d = await res.json();
+        const d = await res.json().catch(() => null);
+        if (!d || typeof d.input !== 'string' || typeof d.instructions !== 'string' || !d.instructions.trim()) {
+          this.error = await mm3AssistantError(res);
+          return;
+        }
         this.lyrics = d.input;
         this.caption = d.instructions;
         // Falsy, not undefined: YuE2 has no duration parameter and answers 0,

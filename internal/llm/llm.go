@@ -1,7 +1,6 @@
-// Package llm proxies the AI assistant: one OpenAI-compatible chat call
-// whose reply must end with a fenced JSON block of the four generation-form
-// fields (system prompt, shared/llm-assistant-system-prompt.md, Step 4).
-// The API key never leaves the server.
+// Package llm proxies the AI assistant: one bounded OpenAI-compatible chat call,
+// parsed using the selected engine's reply contract. The API key never leaves
+// the server; diagnostic errors carry sizes/reasons, never the user's text.
 package llm
 
 import (
@@ -18,20 +17,24 @@ import (
 )
 
 const (
-	// The full system prompt (~160 lines) plus a song draft and potential
-	// LLM internal reasoning (e.g. reasoning/thinking models) can take well over
-	// a minute and generate several thousand tokens upstream; budget accordingly.
-	callTimeout = 120 * time.Second
-	maxTokens   = 8000
-	temperature = 0.8
-	maxUserLen  = 4000 // stage 02 §B
+	// One deadline across attempts, below the app's write deadline and the
+	// recommended proxy read timeout. A cold GPU is not an unlimited wait.
+	CallTimeout = 90 * time.Second
+	// Shared with the form. Complete songs must not be silently clipped.
+	MaxInputBytes = 32 << 10
+	maxTokens     = 16000
+	temperature   = 0.8
 )
 
 var (
 	ErrNoConfig    = errors.New("llm: no assistant configured (set LLM_BASE_URL, LLM_API_KEY, LLM_MODEL_ID)")
 	ErrTimeout     = errors.New("llm: assistant timed out")
 	ErrUnavailable = errors.New("llm: assistant unavailable")
-	ErrUnparseable = errors.New("llm: assistant reply had no usable JSON block")
+	ErrUnparseable = errors.New("llm: assistant reply did not match the required format")
+	ErrInputLimit  = errors.New("llm: assistant input is too large")
+	ErrOutputLimit = errors.New("llm: assistant reply hit the output token limit")
+	ErrRefused     = errors.New("llm: provider declined the request")
+	ErrRateLimited = errors.New("llm: provider rate limited the request")
 )
 
 // Draft is the parsed assistant output (stage 02 §B parsing contract).
@@ -60,7 +63,7 @@ type Draft struct {
 // reply format to expect back.
 //
 // The two engines are not interchangeable here. MiniMax's assistant answers
-// with a fenced JSON block and asks for a duration; YuE2's answers with
+// with JSON and asks for a duration; YuE2's answers with
 // labelled plain text and forbids fences. Pairing the prompt with its parser
 // keeps that from being a runtime guess — the engine that was asked the
 // question is the engine whose format is expected.
@@ -121,15 +124,41 @@ type message struct {
 	Content string `json:"content"`
 }
 
+type chatMessage struct {
+	Content string `json:"content"`
+	Refusal string `json:"refusal"`
+}
+
+type chatChoice struct {
+	Message      chatMessage `json:"message"`
+	FinishReason string      `json:"finish_reason"`
+}
+
 type chatResponse struct {
-	Choices []struct {
-		Message struct {
-			Content string `json:"content"`
-		} `json:"message"`
-	} `json:"choices"`
-	Error *struct {
+	Choices []chatChoice `json:"choices"`
+	Error   *struct {
 		Message string `json:"message"`
 	} `json:"error"`
+}
+
+type completion struct {
+	Content, FinishReason string
+	Elapsed               time.Duration
+}
+
+// Reasons are a small protocol vocabulary, never arbitrary provider text.
+func finishReason(raw string) string {
+	switch raw {
+	case "", "stop", "length", "content_filter", "tool_calls", "function_call":
+		return raw
+	default:
+		return "unknown"
+	}
+}
+
+func replyError(err error, reply completion, inputBytes int) error {
+	return fmt.Errorf("%w: input_bytes=%d reply_bytes=%d finish_reason=%q elapsed_ms=%d",
+		err, inputBytes, len(reply.Content), finishReason(reply.FinishReason), reply.Elapsed.Milliseconds())
 }
 
 // Draft asks the assistant to turn a rough idea into form fields, using the
@@ -147,11 +176,18 @@ func (c *Client) Draft(ctx context.Context, idea, engine string) (*Draft, error)
 	if idea == "" {
 		return nil, errors.New("llm: empty idea")
 	}
-	content, err := c.complete(ctx, prof.System, clip(idea, maxUserLen))
+	if len(idea) > MaxInputBytes {
+		return nil, ErrInputLimit
+	}
+	reply, err := c.complete(ctx, prof.System, idea)
 	if err != nil {
 		return nil, err
 	}
-	return prof.Parse(content)
+	draft, err := prof.Parse(reply.Content)
+	if err != nil {
+		return nil, replyError(ErrUnparseable, reply, len(idea))
+	}
+	return draft, nil
 }
 
 // StyleRequest is what the style editor is asked: the style as it stands, the
@@ -163,8 +199,7 @@ type StyleRequest struct {
 	Lyrics string
 }
 
-// Per-field caps for the style editor. Lyrics are context only, so they are
-// the field cut first, but a full song's words fit.
+// Existing style/change caps; complete lyric context uses MaxInputBytes.
 const (
 	maxStyleLen  = 3000
 	maxChangeLen = 1000
@@ -185,11 +220,19 @@ func (c *Client) RewriteStyle(ctx context.Context, engine string, req StyleReque
 	if change == "" {
 		return "", errors.New("llm: empty style change")
 	}
-	content, err := c.complete(ctx, p.StyleSystem, styleMessage(req.Style, change, req.Lyrics))
+	if len(strings.TrimSpace(req.Lyrics)) > MaxInputBytes {
+		return "", ErrInputLimit
+	}
+	user := styleMessage(req.Style, change, req.Lyrics)
+	reply, err := c.complete(ctx, p.StyleSystem, user)
 	if err != nil {
 		return "", err
 	}
-	return p.ParseStyle(content)
+	style, err := p.ParseStyle(reply.Content)
+	if err != nil {
+		return "", replyError(ErrUnparseable, reply, len(user))
+	}
+	return style, nil
 }
 
 // styleMessage lays the request out under plain labels, so the editor can
@@ -207,7 +250,7 @@ func styleMessage(style, change, lyrics string) string {
 	b.WriteString(clip(change, maxChangeLen))
 	if lyrics = strings.TrimSpace(lyrics); lyrics != "" {
 		b.WriteString("\n\nLyrics (context only; do not rewrite or quote them):\n")
-		b.WriteString(clip(lyrics, maxUserLen))
+		b.WriteString(lyrics)
 	}
 	return b.String()
 }
@@ -225,7 +268,15 @@ func clip(s string, n int) string {
 
 // complete sends one system/user exchange and returns the reply text. One
 // retry on network error only (stage 02 §B).
-func (c *Client) complete(ctx context.Context, system, user string) (string, error) {
+func (c *Client) complete(ctx context.Context, system, user string) (completion, error) {
+	started := time.Now()
+	ctx, cancel := context.WithTimeout(ctx, CallTimeout)
+	defer cancel()
+	var reply completion
+	fail := func(err error) (completion, error) {
+		reply.Elapsed = time.Since(started)
+		return reply, replyError(err, reply, len(user))
+	}
 	reqPayload := chatRequest{
 		Model: c.Model,
 		Messages: []message{
@@ -235,7 +286,10 @@ func (c *Client) complete(ctx context.Context, system, user string) (string, err
 		MaxTokens:           maxTokens,
 		MaxCompletionTokens: maxTokens,
 		Temperature:         temperature,
-		Stream:              false,
+		// OmniRoute injects server-owned skills into non-streaming calls,
+		// including media tools unrelated to this form. Streaming keeps this
+		// exchange text-only; decodeChatResponse folds SSE before parsing.
+		Stream: true,
 	}
 
 	thinkingType := strings.ToLower(strings.TrimSpace(c.Thinking))
@@ -245,12 +299,9 @@ func (c *Client) complete(ctx context.Context, system, user string) (string, err
 	if thinkingType != "enabled" && thinkingType != "on" {
 		reqPayload.Thinking = &ThinkingConfig{Type: "disabled"}
 		reqPayload.ExtraBody = map[string]any{
-			"thinking": map[string]any{
-				"type": "disabled",
-			},
+			"thinking": map[string]any{"type": "disabled"},
 		}
 	}
-
 	effort := strings.ToLower(strings.TrimSpace(c.ReasoningEffort))
 	if effort == "" && thinkingType != "enabled" && thinkingType != "on" {
 		effort = "none"
@@ -258,62 +309,65 @@ func (c *Client) complete(ctx context.Context, system, user string) (string, err
 	if effort != "" {
 		reqPayload.ReasoningEffort = effort
 	}
-
 	body, _ := json.Marshal(reqPayload)
 
-	var content string
 	for attempt := 0; attempt < 2; attempt++ {
 		if ctx.Err() != nil {
-			return "", ErrTimeout
+			return fail(ErrTimeout)
 		}
-
-		cctx, cancel := context.WithTimeout(ctx, callTimeout)
-		req, err := http.NewRequestWithContext(cctx, http.MethodPost,
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost,
 			chatURL(c.BaseURL), strings.NewReader(string(body)))
 		if err != nil {
-			cancel()
-			return "", err
+			return fail(ErrUnavailable)
 		}
 		req.Header.Set("Authorization", "Bearer "+c.APIKey)
 		req.Header.Set("Content-Type", "application/json")
-
 		hc := c.HC
 		if hc == nil {
 			hc = http.DefaultClient
 		}
 		resp, err := hc.Do(req)
 		if err != nil {
-			cancel()
-			if errors.Is(cctx.Err(), context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
-				return "", ErrTimeout
+			if ctx.Err() != nil {
+				return fail(ErrTimeout)
 			}
-			if errors.Is(ctx.Err(), context.Canceled) {
-				return "", ErrTimeout
+			if attempt == 0 {
+				continue // one network retry, within the same deadline
 			}
-			if attempt == 0 && ctx.Err() == nil {
-				continue // one network retry
-			}
-			return "", ErrUnavailable
+			return fail(ErrUnavailable)
 		}
 		cr, decodeErr := decodeChatResponse(resp)
 		resp.Body.Close()
-		cancel()
+		if ctx.Err() != nil {
+			return fail(ErrTimeout)
+		}
+		if resp.StatusCode == http.StatusTooManyRequests {
+			return fail(ErrRateLimited)
+		}
 		if resp.StatusCode >= 400 {
-			return "", fmt.Errorf("%w: HTTP %d", ErrUnavailable, resp.StatusCode)
+			return fail(fmt.Errorf("%w: HTTP %d", ErrUnavailable, resp.StatusCode))
 		}
 		if decodeErr != nil {
-			return "", ErrUnparseable
+			return fail(ErrUnparseable)
 		}
 		if cr.Error != nil {
-			return "", fmt.Errorf("%w: %s", ErrUnavailable, cr.Error.Message)
+			return fail(ErrUnavailable) // no raw provider message in logs
 		}
 		if len(cr.Choices) == 0 {
-			return "", ErrUnparseable
+			return fail(ErrUnparseable)
 		}
-		content = cr.Choices[0].Message.Content
-		break
+		choice := cr.Choices[0]
+		reply.Content, reply.FinishReason = choice.Message.Content, finishReason(choice.FinishReason)
+		if reply.FinishReason == "length" {
+			return fail(ErrOutputLimit)
+		}
+		if reply.FinishReason == "content_filter" || choice.Message.Refusal != "" {
+			return fail(ErrRefused)
+		}
+		reply.Elapsed = time.Since(started)
+		return reply, nil
 	}
-	return content, nil
+	return fail(ErrUnavailable)
 }
 
 // chatURL appends the OpenAI chat path to the configured base URL. If the
@@ -331,9 +385,12 @@ func chatURL(base string) string {
 // answer with SSE even when stream:false was requested; deltas are folded
 // into a single message so the caller sees one shape either way.
 func decodeChatResponse(resp *http.Response) (chatResponse, error) {
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20)) // 4 MB limit
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, (4<<20)+1))
 	if err != nil {
 		return chatResponse{}, err
+	}
+	if len(raw) > 4<<20 {
+		return chatResponse{}, ErrUnparseable
 	}
 	text := strings.TrimSpace(string(raw))
 	ct := resp.Header.Get("Content-Type")
@@ -351,6 +408,7 @@ func decodeChatResponse(resp *http.Response) (chatResponse, error) {
 // into one synthetic chatResponse.
 func foldSSE(text string) (chatResponse, error) {
 	var acc strings.Builder
+	var reason, refusal string
 	for _, line := range strings.Split(text, "\n") {
 		line = strings.TrimSpace(line)
 		if !strings.HasPrefix(line, "data:") {
@@ -362,23 +420,22 @@ func foldSSE(text string) (chatResponse, error) {
 		}
 		var chunk struct {
 			Choices []struct {
-				Delta struct {
-					Content          string `json:"content"`
-					ReasoningContent string `json:"reasoning_content"`
-					Reasoning        string `json:"reasoning"`
-				} `json:"delta"`
-				Message struct {
-					Content          string `json:"content"`
-					ReasoningContent string `json:"reasoning_content"`
-					Reasoning        string `json:"reasoning"`
-				} `json:"message"`
-				Text string `json:"text"`
+				Delta        chatMessage `json:"delta"`
+				Message      chatMessage `json:"message"`
+				Text         string      `json:"text"`
+				FinishReason string      `json:"finish_reason"`
 			} `json:"choices"`
 		}
 		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
 			continue
 		}
 		for _, ch := range chunk.Choices {
+			if ch.FinishReason != "" {
+				reason = finishReason(ch.FinishReason)
+			}
+			if ch.Delta.Refusal != "" || ch.Message.Refusal != "" {
+				refusal = "present"
+			}
 			if ch.Message.Content != "" {
 				acc.WriteString(ch.Message.Content)
 			} else if ch.Delta.Content != "" {
@@ -388,16 +445,12 @@ func foldSSE(text string) (chatResponse, error) {
 			}
 		}
 	}
-	if acc.Len() == 0 {
+	if acc.Len() == 0 && reason == "" && refusal == "" {
 		return chatResponse{}, ErrUnparseable
 	}
-	return chatResponse{Choices: []struct {
-		Message struct {
-			Content string `json:"content"`
-		} `json:"message"`
-	}{{Message: struct {
-		Content string `json:"content"`
-	}{Content: acc.String()}}}}, nil
+	return chatResponse{Choices: []chatChoice{{
+		Message: chatMessage{Content: acc.String(), Refusal: refusal}, FinishReason: reason,
+	}}}, nil
 }
 
 // stripThinking strips <think>...</think> or <reasoning>...</reasoning> blocks
